@@ -45,7 +45,10 @@ python main.py
 
 All inference config lives in `config/inference_road_lane_segmentation.yaml`.
 `openlane_module/` converts the OpenLane dataset into this project's format and
-holds the tools that measure what that data can verify — see its own README.
+holds the tools that measure what that data can verify — see its own README
+(including the official 3D-lane scorer and the ego-lane Z-error evaluation, WWH-26).
+`baselines/latr/` runs the public LATR (ICCV 2023) OpenLane weights locally with no
+compiled ops, as the Z-error comparison baseline — see its README.
 
 ## Pipeline Architecture
 

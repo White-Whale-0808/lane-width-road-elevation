@@ -22,6 +22,10 @@ pipeline 與 GT 模組**一行未改** —— 相容性全部在轉換器裡解�
 | `select_updown.py` | 從上面的輸出挑片段：去掉大部分是路緣（無漆線幀 ≥ 50%）與只有單邊（兩側漆線幀 < 25%）的段，以目錄連結放進新根目錄，不複製影像 |
 | `select_updown_straight.py` | 同一份輸出**逐幀**篩：兩側內側線都是漆線（轉換器收錄條件）、50 m 內 sagitta ≤ 0.15 m（Tier A 門檻）、非夜間、非路口（官方 tag，`--keep-night` / `--keep-intersection` 放回）。frame_id 重編、`collect_dist_m` 保留，影像用硬連結。2026-09-24：留下 ≥10 幀的 8 段 221 幀、38 個連續 run |
 | `convert_openlane_culane.py` | OpenLane 2D 標註（`uv`）→ CULane 格式（`.lines.txt`＋分割遮罩＋`list/<split>_gt.txt`），給 CLRNet 等 2D 偵測器訓練／評估（WWH-25）。只收 `attribute` 1–4（左左／左／右／右右），路緣從不帶 attribute 所以自動排除；影像硬連結、不縮放不裁切。⚠ OpenLane 標註通常沒延伸到影像底部（從 8–14 m 才開始）；`--extend-bottom` 把每條線依最近那段直線延伸到底部（CULane 的標註習慣），預設不延伸，微調時兩種都試。空標籤幀依原因分類（`frame_kind`；`--stats-only` 只統計）：驗證集 42.7% 空（路緣 19.3%、沒線 9.2%、遠處漆線 11.4%、自車道位置上有漆線但沒標 2.7%），預設全部保留（最後一類 96% 在路口，是 OpenLane「路口裡不定義自車道」的慣例而非漏標；`--drop-ego-unlabelled` 可排除） |
+| `official_eval/` | OpenLane **官方** 3D 車道線評估程式（第三方，Apache 2.0）。只改兩行 import（跟本 repo 的 `utils/` 撞名）、`MinCostFlow.py` 換成等價的 scipy 版（官方要的 ortools 舊 API 已移除）；細節在 `__init__.py` |
+| `zerror_predict.py` | Z-error 第一步：偵測器前端跑官方上下坡子集，輸出每條自車道線的 3D 點（相機光學座標）→ `pred_<tag>.jsonl`（WWH-26） |
+| `zerror_eval.py` | 用官方評估程式算 F-score／Z-error，另存逐點誤差並跟官方彙總對帳；`--scope all`（有自車道線的幀）／`both`（兩側都有，比較範圍 B）／`all-lanes`（官方原規則，驗證別人的模型用）。GT 與預測套同一個外參轉換 |
+| `zerror_paired.py` | 兩個方法只在「同一幀、同一條線、同一距離都有點」的地方比 Z-error，不讓任一方因只輸出容易的地方而佔便宜 |
 
 全部從 repo 根目錄執行，預設讀 `D:/datasets/openlane`：
 
@@ -49,7 +53,22 @@ python -m openlane_module.select_updown --src D:/datasets/openlane_updown --out 
 # 2D 偵測器的訓練資料（CULane 格式）；輸出路徑要短（Windows 260 字元上限）
 python -m openlane_module.convert_openlane_culane --split training \
     --openlane <OpenLane 根目錄> --out D:/datasets/openlane_culane
+
+# 自車道 Z-error（官方上下坡子集，輸出在 debug/outputs/zerror/；LATR 對照組見 baselines/latr/README.md）
+uv run --no-sync --with addict --with shapely --with yapf python -m openlane_module.zerror_predict \
+    --weights <CLRNet 權重> --tag ep10
+python -m openlane_module.zerror_eval --tag ep10 --scope both
+python -m openlane_module.zerror_paired --a ep10 --b latr --scope both
 ```
+
+## Z-error 評估的規則（官方 `eval_3D_lane.py`）
+
+- 取樣 y＝3..102 m 每 1 m；近段 y ≤ 40 m（38 點）、遠段 41–102 m。座標是官方「地面座標」：
+  x 右、y 前、z 上，原點在相機正下方地面（外參改寫、x/y 平移歸零）。
+- 一對線的配對總成本 < 1.5 × 100 就算進 Z-error（**不必是 F-score 的 TP**）；先在每條線上對
+  「兩邊都可見」的點平均，再對所有線平均。所以只輸出到 45 m 的線也會被評，只是遠處沒點。
+- 只報誤差會獎勵「只在容易的地方輸出」，所以 `zerror_eval.py` 另印覆蓋率，兩個方法的比較用
+  `zerror_paired.py` 只取共同的點。
 
 ## 三個設計決定
 
