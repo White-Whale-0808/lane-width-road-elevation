@@ -23,7 +23,7 @@ calibrator measures it per frame, so nothing downstream needs to know — except
 `last_resort_lane_width`, whose 3.25 is inner-edge-to-inner-edge; pass the
 centre-to-centre value for this front end.
 
-Extra outputs, for the WWH-25 step-3 evaluation (reported, not used as gates):
+Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
                           paint on BOTH sides
     nearfield_paint_frac  same, over the near-field window rows
@@ -39,6 +39,7 @@ from libs.inference.model_lane_fitting import (apply_tail, densify, trim_pitch_t
 from libs.inference.pitch_estimation import (NearfieldWidthCalibrator,
                                              _empty_result,
                                              estimate_pitch_from_curves,
+                                             nearfield_widths_from_curves,
                                              resolve_lane_width)
 
 
@@ -122,15 +123,14 @@ def infer_one_clrnet(
     refine
         "none" (default: detector positions everywhere; the paint flags are
         still computed) or "center" (snap paint rows to the stripe centre).
-        WWH-25 step 3: snapping made pitch WORSE at every depth (Town05 5-10 m
-        0.262° vs 0.133°) - the reference point jumps between the snapped and
-        the detector centre at every dash end.
+        Snapping makes pitch WORSE at every depth (Town05 5-10 m 0.262° vs
+        0.133°): the reference point jumps between the snapped and the detector
+        centre at every dash end.
     nearfield_source
         "paint" (default: the calibrator sees only paint rows, bridged between
         paint rows as lane_curve would; no paint in the window ⇒ not measured
-        this frame, the sequence holds) or "all" (the full curves). Step 3:
-        model-only near fields measured widths off by up to 0.7 m; paint-only
-        cut the OpenLane width error p90 from 0.59 m to 0.23 m.
+        this frame, the sequence holds) or "all" (the full curves). Paint-only
+        cuts the OpenLane width error p90 from 0.59 m to 0.23 m.
     ego_guard
         Run model_lane_fitting.guard_ego on the picked pair.
     max_depth_m
@@ -178,20 +178,21 @@ def infer_one_clrnet(
             method=method)
         pitch_curve = trim_pitch_to_depth(pitch_curve, max_depth_m)
 
+    # share of the reported pitch output's width samples that are paint on both
+    # sides: only rows within the (possibly trimmed) output depth, None without output
+    width_paint_frac = None
     widths = np.asarray(pitch_curve["widths"])
-    w_rows = widths[:, 0] if widths.ndim == 2 and len(widths) else np.empty(0)
-    both = _both_paint(left_curve, right_curve, w_rows)
-    width_paint_frac = float(both.mean()) if len(both) else None
+    if pitch_curve["pitch_at"] is not None and widths.ndim == 2 and len(widths):
+        z = f_x * w_real_metric / widths[:, 1]
+        w_rows = widths[z <= pitch_curve["z_visible_max"], 0]
+        both = _both_paint(left_curve, right_curve, w_rows)
+        width_paint_frac = float(both.mean()) if len(both) else None
 
-    z_lo, z_hi = cal.z_lo, cal.z_hi           # the window the calibrator measures in
-    nearfield_paint_frac = None
-    if left_curve is not None and right_curve is not None:
-        cy = H / 2.0
-        y_top = max(left_curve["y"][0], right_curve["y"][0], cy + f_y * camera_height / z_hi)
-        y_bot = min(left_curve["y"][-1], right_curve["y"][-1], cy + f_y * camera_height / z_lo)
-        nf_rows = np.arange(np.ceil(y_top), np.floor(y_bot) + 1.0)
-        if len(nf_rows):
-            nearfield_paint_frac = float(_both_paint(left_curve, right_curve, nf_rows).mean())
+    # same rows the calibrator's near-field window takes, from the same function
+    nf = nearfield_widths_from_curves(left_curve, right_curve, f_y, camera_height, H,
+                                      z_lo=cal.z_lo, z_hi=cal.z_hi)
+    nearfield_paint_frac = (float(_both_paint(left_curve, right_curve, nf[:, 0]).mean())
+                            if len(nf) else None)
 
     result = {"pitch_curve": pitch_curve, "w_real_used": w_real_metric,
               "w_real_status": status, "w_real_reason": cal.reason,

@@ -6,6 +6,9 @@
   沒輸出就是空串列。轉到官方地面座標在 zerror_eval.py 做（要讀 GT JSON 的外參）。
 資料是 export_updown.py 轉出的官方上下坡子集（預設 D:/datasets/openlane_updown），一段一個
 NearfieldWidthCalibrator，設定與 WWH-25 的評估相同（不精修、近場只用漆的列量寬、有寬度檢查）。
+相機取自每段的 metadata.json（libs.dataset_camera）。偵測器的權重與前處理預設都讀
+config/lane_detector_clrnet.yaml；用 --weights 換權重時必須同時給 --mode 與 --cut-frac，
+前處理要跟權重的訓練方式一致（CULane 權重配錯前處理會掉線，86% → 66.5%）。
 
 每一列的 3D 點怎麼來（跟 pitch_estimation 同一套幾何）：
   widths 的每一列 (v, w_px) → 深度 Z = f_x·w_real/w_px
@@ -17,7 +20,7 @@ NearfieldWidthCalibrator，設定與 WWH-25 的評估相同（不精修、近場
 相機座標就是原相機座標，可以直接套官方的外參轉換。
 
     uv run --no-sync --with addict --with shapely --with yapf python -m openlane_module.zerror_predict \\
-        --weights D:/models/clrnet/ft_full/ft_B_full_ep10.pth --tag ep10
+        --weights D:/models/clrnet/ft_full/ft_B_full_ep10.pth --mode naive --cut-frac 0 --tag ep10
 """
 import sys, pathlib, json
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -30,6 +33,7 @@ import numpy as np, pandas as pd, yaml
 from libs.inference.pipeline_clrnet import infer_one_clrnet
 from libs.inference.lane_detector import CLRNet
 from libs.inference.pitch_estimation import NearfieldWidthCalibrator
+from libs.dataset_camera import camera_from_metadata
 
 
 def lanes_3d(res, f_x, W):
@@ -61,32 +65,41 @@ def lanes_3d(res, f_x, W):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', type=pathlib.Path, default=pathlib.Path('D:/datasets/openlane_updown'))
-    ap.add_argument('--weights', required=True)
     ap.add_argument('--tag', required=True)
     ap.add_argument('--out-dir', type=pathlib.Path, default=pathlib.Path('debug/outputs/zerror'))
-    ap.add_argument('--mode', default='naive')
-    ap.add_argument('--cut-frac', type=float, default=0.0)
-    ap.add_argument('--img-w', type=int, default=800)
-    ap.add_argument('--img-h', type=int, default=320)
+    ap.add_argument('--weights', default=None, help='省略＝config 的權重與前處理；給了就要一起給 --mode 與 --cut-frac')
+    ap.add_argument('--mode', default=None, help='culane / naive')
+    ap.add_argument('--cut-frac', type=float, default=None)
+    ap.add_argument('--img-w', type=int, default=None)
+    ap.add_argument('--img-h', type=int, default=None)
     ap.add_argument('--max-depth', type=float, default=None, help='pitch 輸出最遠深度；預設不修剪（仍有 z_cap 45 m）')
     ap.add_argument('--limit', type=int, default=0)
     a = ap.parse_args()
+    if a.weights and (a.mode is None or a.cut_frac is None):
+        ap.error('--weights 要搭配 --mode 與 --cut-frac（前處理必須跟權重的訓練方式一致）')
 
     cfg = yaml.safe_load(open('config/inference_road_lane_segmentation.yaml', encoding='utf-8'))
     ccfg = yaml.safe_load(open('config/lane_detector_clrnet.yaml', encoding='utf-8'))
     pe, mo, lf = cfg['pitch_estimation'], cfg['model'], cfg['lane_fitting']
     cc = ccfg['clrnet']
-    det = CLRNet(weights=a.weights, device=mo['device'], conf=cc['conf_threshold'],
-                 img_w=a.img_w, img_h=a.img_h)
+    if a.weights is None:
+        det, cut_frac, mode = CLRNet.from_config(cc, device=mo['device'])
+    else:
+        det = CLRNet(weights=a.weights, device=mo['device'], conf=cc['conf_threshold'],
+                     img_w=a.img_w or cc.get('img_w', 800), img_h=a.img_h or cc.get('img_h', 320))
+        cut_frac, mode = a.cut_frac, a.mode
+    print(f'detector: weights={a.weights or cc.get("weights") or "(default CULane)"} mode={mode} cut_frac={cut_frac}')
 
     out = a.out_dir / f'pred_{a.tag}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
     n = 0
     with open(out, 'w', encoding='utf-8') as fo:
         for seg_dir in sorted(p for p in a.root.iterdir() if p.is_dir()):
-            meta = json.loads((seg_dir / 'metadata.json').read_text(encoding='utf-8'))
-            f_x, f_y, h = meta['f_x'], meta['f_y'], meta['camera_height']
-            H, W = meta['resize_size']
+            H, W = cfg['input']['resize_size']
+            cam = camera_from_metadata(seg_dir, (H, W))
+            if cam is None:
+                raise SystemExit(f'{seg_dir} 沒有 metadata.json 的相機參數')
+            f_x, f_y, h = cam['f_x'], cam['f_y'], cam['camera_height']
             cal = NearfieldWidthCalibrator(f_x, f_y, H, h)
             for r in pd.read_csv(seg_dir / 'measurements.csv').itertuples():
                 img = seg_dir / 'images' / f'{r.frame_id:06d}.png'
@@ -100,7 +113,7 @@ def main():
                            source_frame=str(r.source_frame), lanes=[], status=None)
                 try:
                     res = infer_one_clrnet(det, str(img), (H, W), lf['num_samples'], f_x, f_y, h,
-                                           cut_frac=a.cut_frac, detector_mode=a.mode, tail='keep',
+                                           cut_frac=cut_frac, detector_mode=mode, tail='keep',
                                            refine='none', nearfield_source='paint', ego_guard=True,
                                            max_depth_m=a.max_depth,
                                            samples_per_meter=lf.get('samples_per_meter'),

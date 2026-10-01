@@ -63,3 +63,11 @@ def test_point_errors_reconcile_with_official_bench():
         assert abs(ours - official) < 1e-12
     left_close = [r['z_err'] for r in rows if r['attr'] == 2 and not r['far']]
     np.testing.assert_allclose(left_close, 0.05, atol=1e-9)
+
+
+def test_far_only_match_is_not_near_coverage():
+    ev = make_evaluator()
+    gt, pred = [_lane(-1.6, 50, 90)], [_lane(-1.5, 50, 90)]
+    rows, gt_rows = point_errors(ev, pred, gt, [np.ones(len(gt[0]))], [2])
+    assert gt_rows[0]['matched'] and not gt_rows[0]['near_counted']
+    assert all(r['far'] for r in rows)

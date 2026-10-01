@@ -10,6 +10,7 @@ from libs.inference.road_segmentation import load_pidnet
 from libs.inference.pipeline import infer_one
 from libs.inference.pitch_estimation import NearfieldWidthCalibrator
 from libs.road_profile_gt import load_profile_gt
+from libs.dataset_camera import resolve_camera, describe as describe_camera
 from libs.visualization.profile_mae_visualization import plot_profile_mae
 from libs.visualization.route_profile_visualization import plot_route_profile
 import traceback
@@ -27,11 +28,7 @@ min_segment_length_far    = config["line_segmentation"]["min_segment_length_far"
 track_bands               = config["lane_segmentation"].get("track_bands", 16)
 num_samples               = config["lane_fitting"]["num_samples"]
 samples_per_meter         = config["lane_fitting"].get("samples_per_meter")
-f_x                       = config["pitch_estimation"]["f_x"]
-f_y                       = config["pitch_estimation"]["f_y"]
-camera_height             = config["pitch_estimation"].get("camera_height")
 last_resort_lane_width    = config["pitch_estimation"].get("last_resort_lane_width")
-camera_offset_m           = config["pitch_estimation"].get("camera_forward_offset", 0.0)
 pitch_method              = config["pitch_estimation"].get("method", "windowed")
 gt_height_source          = config.get("ground_truth", {}).get("height_source", "auto")
 input_csv                 = config["csv_io"]["input_dir"]
@@ -116,6 +113,11 @@ def main(argv=None):
     else:
         in_csv, meas_csv = input_csv, measurements_csv
         image_dir_str = image_batch_path
+    # 相機：資料集 metadata.json 描述的相機跟 config 不同時用資料集自己的
+    cam, cam_src = resolve_camera(config["pitch_estimation"], Path(image_dir_str).parent, resize_size)
+    print(describe_camera(cam, cam_src))
+    f_x, f_y, camera_height = cam["f_x"], cam["f_y"], cam["camera_height"]
+    camera_offset_m = cam["camera_forward_offset"]
     out_csv  = _tagged(output_csv, args.tag)
     prob_csv = _tagged(problem_csv, args.tag)
 
@@ -138,7 +140,7 @@ def main(argv=None):
     n_skip_pipeline = 0
     skip_frame_ids  = []
 
-    # 車道寬一律由近場量測（階段 C，2026-09-18）：一個資料集目錄＝一段連續片段＝
+    # 車道寬一律由近場量測：一個資料集目錄＝一段連續片段＝
     # 一個 calibrator。量不到就沿用本片段上一次量到的值；本片段從沒量到過的幀
     # 才用 config 的 last_resort_lane_width（沒設就不輸出 pitch）。狀態與原因
     # 寫進 CSV 並在結尾統計，用了最後手段的幀一眼可辨。

@@ -32,25 +32,24 @@ and walls (insufficient contrast against the road).
 
 The peak window is deliberately FIXED at 1.._PEAK_PX: the probe sits on the
 edge, so the bright side starts immediately regardless of stripe width.
-Widening it with the geometric stripe bound was tried and broke the check
-near the horizon, where the grade margin inflates k to ~23 px and the
-window swallows bright far-field surfaces (down_hile frame 157).
+Widening it with the geometric stripe bound breaks the check near the
+horizon, where the grade margin inflates k to ~23 px and the window swallows
+bright far-field surfaces.
 
 Two layers use this score (validated on all three Town03 datasets):
 
 1. filter_paint_segments — drops non-paint ELSED segments BEFORE lane
    tracking, direction-agnostic (a segment may be either edge of any
    stripe). With the shadow boundary gone the tracker re-seeds on the true
-   white line: mode B frames recover full visible range instead of losing
-   data (down_hile 438-450: MAE 1.3-1.6 → 0.17, z_max 6 → 20 m).
+   white line and recovers the full visible range (sag case: MAE 1.3-1.6°
+   → 0.17°, z_max 6 → 20 m).
 2. truncate_at_evidence_break — walks the refined inner-chain points near
    to far, direction-aware (paint lies OUTWARD of the inner edge), and cuts
    the chain at the first _TRUNC_MIN_RUN consecutive failures: beyond a
    sustained evidence break (the crest occlusion boundary) nothing the
    chain caught is trustworthy. Contaminated crest tails fail 18-42 points
    in a row while normal frames show at most 1 isolated failure, so the
-   run-length rule separates them cleanly (mode A frames 147-243:
-   MAE 2.4-9.8 → < 0.8, dy_far back inside ±3 px).
+   run-length rule separates them cleanly (crest case: MAE 2.4-9.8° → < 0.8°).
 
 Calibration needed: f_x, f_y and camera_height only. The one geometric
 quantity these checks use is the row depth z_min(y) = f_y*h/(y-cy+grade),
@@ -128,9 +127,8 @@ def truncate_at_evidence_break(image_rgb, points, is_left,
     probe — no evidence either way, they neither fail nor extend a run).
     Failing points BEFORE the first passing point are dropped individually:
     a failing run at the chain's near end is a local artifact (image-bottom
-    dark strip, hood shadow — uphile frames 387/396 lost their whole side
-    to it), not an occlusion boundary, which by construction lies beyond
-    verified road. From the first pass onward, the first _TRUNC_MIN_RUN
+    dark strip, hood shadow), not an occlusion boundary, which by construction
+    lies beyond verified road. From the first pass onward, the first _TRUNC_MIN_RUN
     consecutive failures cut the chain there. Returns the surviving points,
     near (large y) first.
     """

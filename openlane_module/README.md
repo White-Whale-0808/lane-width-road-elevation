@@ -56,7 +56,7 @@ python -m openlane_module.convert_openlane_culane --split training \
 
 # 自車道 Z-error（官方上下坡子集，輸出在 debug/outputs/zerror/；LATR 對照組見 baselines/latr/README.md）
 uv run --no-sync --with addict --with shapely --with yapf python -m openlane_module.zerror_predict \
-    --weights <CLRNet 權重> --tag ep10
+    --weights <CLRNet 權重> --mode naive --cut-frac 0 --tag ep10   # 前處理要跟權重一致；省略 --weights＝用 config
 python -m openlane_module.zerror_eval --tag ep10 --scope both
 python -m openlane_module.zerror_paired --a ep10 --b latr --scope both
 ```

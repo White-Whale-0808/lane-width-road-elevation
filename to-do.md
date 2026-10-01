@@ -87,8 +87,8 @@ repo 內論文背書（`Lin_&_Tsai_IEEETPAMI_1991.pdf`、`AI-Enhanced_Mono-View_
 - [ ] 待辦：對「有依據」的項目，在註解補上明確 ref（規範名稱 / repo 論文路徑）
 
 ### 2. `docs/diagrams/` 沒有進版控
-（原本的「修失效的文件參照」已完成：docstring 改指向版控裡真的有的
-`docs/papers/lane_segmentation_design_logic.drawio`。）
+（2026-10-01 決定：**等整個流程確定後再重畫流程圖**，到時一併決定放哪裡。在那之前
+`docs/papers/*.drawio` 四份的本機刪除不 commit，repo 裡保留舊圖。程式註解已不再指向任何 drawio。）
 
 `docs/diagrams/` 底下有四份流程圖（`lane_segmentation_flow`、`lane_fitting_flow`、
 `pitch_estimation_flow`、`workflow`，2026-07-17），**未追蹤也沒被 gitignore**。

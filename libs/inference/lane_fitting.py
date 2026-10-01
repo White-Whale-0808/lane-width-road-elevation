@@ -3,28 +3,22 @@ import numpy as np
 # Segment shadowing: a segment consistently more OUTER than a parallel kept
 # segment (by > margin px over >= min-overlap rows) is an outer paint edge or
 # the outer line of a double marking. It never defines the inner envelope —
-# where the inner-line segment is absent (dashed gaps, image bottom) the
-# envelope must yield a GAP, not fall back outward: mid-chain fallback steps
-# in x_inner(y) become width steps and blow up the spline pitch at the ends
-# (frames 145-152, +1.3 to +2.1 deg MAE).
+# where the inner line is absent (dashed gaps, image bottom) the envelope must
+# yield a GAP, not fall back outward: fallback steps in x_inner(y) become width
+# steps and blow up the pitch at the ends.
 _SHADOW_MARGIN_PX = 3.0
 _SHADOW_MIN_OVERLAP_ROWS = 8
 
-# Fragment split: a 1-row x step in the envelope beyond the steepest
-# legitimate lane slope means the envelope switched to a different segment,
-# not lane curvature — fragment boundary. The flattest line the tracker can
-# accept is one at _NOISE_X_MAX = 16 m lateral, i.e. |dy/dx| = f_y*h/(f_x*16)
-# = 0.06 with this calibration, so a lane edge could in principle run ~16
-# px/row. That bound is far too loose to be useful: in practice the INNER
-# edge of the ego lane never exceeds ~3.3 px/row on these datasets, which is
-# what 4.0 is set from. Measured, not derived — see to-do.md.
+# Fragment split: a 1-row x step in the envelope beyond the steepest legitimate
+# lane slope means the envelope switched to a different segment — fragment
+# boundary. Measured, not derived: the ego lane's inner edge never exceeds
+# ~3.3 px/row on these datasets (the geometric bound, ~16 px/row, is too loose).
 _FRAG_MAX_STEP_PX = 4.0
 
-# Junction consistency: bridging from one fragment to the next must stay
-# within this off-direction displacement (bridge slope vs either fragment's
-# own end slope, times the gap dy). Same 20 px scale validated for the old
-# point-pair guards (12-frame scan 2026-07-16): the bottom outer-edge
-# fallback lands 27-93 px outward, legitimate bridges stay under 20 px.
+# Junction consistency: bridging from one fragment to the next must stay within
+# this off-direction displacement (bridge slope vs either fragment's own end
+# slope, times the gap dy). Legitimate bridges stay under 20 px; the bottom
+# outer-edge fallback lands 27-93 px outward.
 _JUNCTION_TOL_PX = 20.0
 
 # End slopes near a junction use up to this many row pairs of the fragment.
@@ -47,11 +41,9 @@ _REFINE_MIN_GRAD = 4.0
 def inner_chain_points(segments, is_left, return_debug=False):
     """Clean inner-lane-line points for one side, from tracked segments.
 
-    The lane width (measured per frame in pitch_estimation) is INNER-edge-to-
-    inner-edge, but
-    the lane tracker deliberately keeps the whole marking group (all parallel paint
-    edges — evidence for tracking). This function recovers the measurement
-    semantics downstream:
+    The lane width (measured per frame in pitch_estimation) is inner edge to
+    inner edge, but the tracker deliberately keeps the whole marking group (all
+    parallel paint edges — evidence for tracking). This recovers the inner edge:
 
     1. Per-row inner envelope (no tunable): for every image row y covered by
        at least one segment, x_inner(y) = innermost x among the covering
@@ -65,9 +57,8 @@ def inner_chain_points(segments, is_left, return_debug=False):
        direction deviates from both fragments' own end directions by more
        than _JUNCTION_TOL_PX (scaled by the gap dy) marks a break; the
        largest consistent fragment group (by row count) survives. One rule
-       drops both mid-chain off-lane runs (artifact next to a dashed gap,
-       frames 145-156) and bottom outer-edge fallback rows (inner segment
-       ending above the image bottom, 27-93 px outward).
+       drops both mid-chain off-lane runs (next to a dashed gap) and bottom
+       outer-edge fallback rows (inner segment ending above the image bottom).
 
     Returns an (N, 2) array of (x, y) points, near (large y) first.
     With return_debug=True returns (points, dbg) where dbg exposes the
@@ -236,32 +227,22 @@ def refine_inner_points(image_rgb, points, is_left):
     return refined
 
 
-# Depth-jump truncation: paired-row depth (z = f_x*w_real/width, one value
-# per row where BOTH chains have a real point — no continuity assumption) can
-# only jump between adjacent measured rows when the surface in between is
-# hidden (crest occlusion): the jump equals the hidden horizontal distance,
-# 10-30 m in the Town03 crests, while continuous road moves <= ~2 m per
-# paired row (measured max 1.8 m, normal frames). Guards the one case the
-# photometric gate cannot: REAL paint beyond the crest that is simply not
-# the same continuous lane line. Zero false triggers on all sampled normal
-# frames with these gates.
+# Depth-jump truncation: paired-row depth (one value per row where BOTH chains
+# have a real point — no continuity assumption) can only jump between adjacent
+# measured rows when the surface in between is hidden (crest occlusion): the jump
+# is the hidden distance, 10-30 m on the Town03 crests, while continuous road
+# moves <= ~2 m per paired row. Guards the one case the photometric gate cannot:
+# real paint beyond the crest that is not the same continuous lane line.
 #
-# Depth is measured in LANE WIDTHS (z/w_real = f_x/width), so the guard needs
-# no lane width (stage C, 2026-09-18): the relative gate and the extrapolation
-# test are ratios of depths and do not care about the unit. Only the absolute
-# floor did — it was 3.0 m, tuned with w_real = 3.25, and is carried over as
-# 3.0/3.25 lane widths so the guard behaves exactly as before on that road. On
-# a 4.4 m lane the floor is now 4.1 m: the jump a continuous road can make per
-# paired row scales with how far apart the lines are in the image, which is
-# set by the width, so a width-relative floor is the better guess anyway.
+# Depth is in LANE WIDTHS (z/w = f_x/width), so no lane width is needed; the
+# absolute floor is 3.0 m on a 3.25 m lane, expressed as 3.0/3.25 lane widths.
 _ZJUMP_ABS_LANES = 3.0 / 3.25   # minimum jump that can never be continuous road
 _ZJUMP_FRAC = 0.3     # relative gate: dz > 0.3*z at larger depths
 # Continuous-road bound across a ROW GAP: extrapolating the local plane
 # (height matched at the near pair) to the far row gives the depth a
 # continuous visible surface would reach — z_exp = z1*(y1-cy)/(y2-cy), the
-# f_y cancels. A visible continuous surface stays near it; an occlusion
-# jump far exceeds it. Without this, a legitimate 105-row pairing gap on a
-# normal frame (down_hile 209: z 2.5 -> 6.0) trips the absolute gate.
+# f_y cancels. A visible continuous surface stays near it; an occlusion jump
+# far exceeds it (without this a legitimate long pairing gap trips the floor).
 _ZJUMP_EXTRAP_FACTOR = 1.5
 
 

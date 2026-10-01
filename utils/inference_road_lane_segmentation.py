@@ -17,6 +17,7 @@ from libs.inference.pitch_estimation import (estimate_pitch_from_curves, Nearfie
                                              resolve_lane_width)
 from libs.visualization.pitch_visualization import plot_pitch_profile, plot_y3d_profile, save_pitch_estimation_steps
 from libs.road_profile_gt import load_profile_gt
+from libs.dataset_camera import resolve_camera, describe as describe_camera
 
 with open("config/inference_road_lane_segmentation.yaml", "r", encoding="utf-8") as f:
     config = yaml.safe_load(f)
@@ -33,17 +34,17 @@ alpha = config["visualization"]["alpha"]
 save_path = config["visualization"]["save_path"]
 num_samples = config["lane_fitting"]["num_samples"]
 samples_per_meter = config["lane_fitting"].get("samples_per_meter")
-f_x = config["pitch_estimation"]["f_x"]
-f_y = config["pitch_estimation"]["f_y"]
-camera_height    = config["pitch_estimation"].get("camera_height")
+# 相機：影像所屬資料集的 metadata.json 描述的相機跟 config 不同時用資料集自己的
+camera, camera_source = resolve_camera(config["pitch_estimation"], Path(image_path).parent.parent,
+                                       resize_size)
+f_x, f_y, camera_height = camera["f_x"], camera["f_y"], camera["camera_height"]
+camera_offset_m  = camera["camera_forward_offset"]
 last_resort_lane_width = config["pitch_estimation"].get("last_resort_lane_width")
-camera_offset_m  = config["pitch_estimation"].get("camera_forward_offset", 0.0)
 gt_height_source = config.get("ground_truth", {}).get("height_source", "auto")
 pitch_method     = config["pitch_estimation"].get("method", "windowed")
 # GT 取自影像自己的資料集（<dataset>/images/000200.png -> <dataset>/measurements.csv），
-# 不看 csv_io.measurements_csv —— 那個鍵是 batch 用的。兩邊指到不同資料集時，單張
-# 推論會把影像配上另一份資料集的同編號幀而完全不報錯（2026-08-22：down_hile 的影像
-# 配上 full_road 第 200 幀，GT 畫成一條平線，看起來像下坡 GT 算錯）。
+# 不看 csv_io.measurements_csv —— 那個鍵是 batch 用的；兩邊指到不同資料集時，
+# 會把影像配上另一份資料集的同編號幀而不報錯。
 measurements_csv = Path(image_path).parent.parent / "measurements.csv"  # .parent 對短路徑不會爆
 
 
@@ -65,6 +66,7 @@ def main():
     """
     Road segementation
     """
+    print(describe_camera(camera, camera_source))
     model = load_pidnet(model_name, weight_path, device)
     t0 = time.perf_counter()
     resized_image, pred_mask = predict_road(model, image_path, device, resize_size)

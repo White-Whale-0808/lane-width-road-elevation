@@ -113,12 +113,15 @@ def point_errors(ev, pred_lanes, gt_lanes, gt_vis, gt_attr):
             matched[i] = j
     for i, (gx, gz, gm, at) in enumerate(G):
         j = matched.get(i)
+        both = (gm & P[j][2]) if j is not None else np.zeros_like(gm)
         gt_rows.append(dict(attr=at, n_close=int(gm[:close].sum()), n_far=int(gm[close:].sum()),
-                            matched=j is not None))
+                            matched=j is not None,
+                            # counted in the official near Z-error: matched AND >= 1 both-visible near point
+                            near_counted=bool(both[:close].any())))
         if j is None:
             continue
         px, pz, pm = P[j]
-        for k in np.where(gm & pm)[0]:
+        for k in np.where(both)[0]:
             rows.append(dict(attr=at, y=float(ys[k]), far=bool(k >= close),
                              x_err=float(abs(gx[k] - px[k])), z_err=float(abs(gz[k] - pz[k])),
                              z_gt=float(gz[k]), z_pred=float(pz[k])))
@@ -145,7 +148,7 @@ def main():
             if a.scope != 'all-lanes' and L.get('attribute') not in EGO:
                 continue
             g_l.append(gt_to_ground(E, L['xyz'])); g_v.append(np.asarray(L['visibility']))
-            g_c.append(L['category']); g_a.append(L['attribute'])
+            g_c.append(L['category']); g_a.append(L.get('attribute', 0))
         if not g_l and a.scope != 'all-lanes':
             continue                          # 這幀官方沒有定義自車道線，不評
         if a.scope == 'both' and {at for at, v in zip(g_a, g_v) if (v > 0.5).any()} != set(EGO):
@@ -165,9 +168,17 @@ def main():
         frames.append(dict(segment=r['segment'], frame_id=r['frame_id'], out=bool(pred), status=r.get('status'),
                            z_close=np.mean(c[c > -1 + 1e-6]) if (c > -1 + 1e-6).any() else np.nan))
 
+    if not frames:
+        print(f'== {a.tag}（scope={a.scope}）：沒有可評估的幀（預測檔 {len(recs)} 行）')
+        return
     S = np.array(stats, float)
     R_, P_ = S[:, 0].sum() / max(S[:, 3].sum(), 1), S[:, 1].sum() / max(S[:, 4].sum(), 1)
     P, G, F = pd.DataFrame(pts), pd.DataFrame(gts), pd.DataFrame(frames)
+    if P.empty:
+        P = pd.DataFrame(columns=['segment', 'frame_id', 'attr', 'y', 'far', 'x_err', 'z_err', 'z_gt', 'z_pred'])
+        P['far'] = P['far'].astype(bool)
+    if G.empty:
+        G = pd.DataFrame(columns=['attr', 'n_close', 'n_far', 'matched', 'near_counted'])
     P.to_csv(a.out_dir / f'points_{a.tag}{suffix}.csv', index=False)
     F.to_csv(a.out_dir / f'frames_{a.tag}{suffix}.csv', index=False)
 
@@ -183,7 +194,8 @@ def main():
           f'GT {int(S[:, 3].sum())} 條、預測 {int(S[:, 4].sum())} 條）')
     print(f'官方 Z-error 近段（3–40 m）{np.mean(zc):.4f} m（{len(zc)} 條線）   '
           f'遠段（41–102 m）{np.mean(zf) if zf else float("nan"):.4f} m（{len(zf)} 條線）')
-    print(f'覆蓋：GT 線 {len(G)} 條，近段算進 Z-error 的 {G.matched.mean():.1%}；'
+    near_cov = G.near_counted.astype(float).mean() if len(G) else float('nan')
+    print(f'覆蓋：GT 線 {len(G)} 條，近段算進 Z-error 的 {near_cov:.1%}；'
           f'近段可見取樣點 {n_close}，有預測點 {(~P.far).sum() / max(n_close, 1):.1%}；'
           f'遠段可見點 {G.n_far.sum()}，有預測點 {P.far.sum() / max(G.n_far.sum(), 1):.1%}')
     if len(P):

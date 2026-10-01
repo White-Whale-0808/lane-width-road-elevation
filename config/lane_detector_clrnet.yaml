@@ -1,63 +1,34 @@
-# Learned lane-detector front end (WWH-25) — read ONLY by pipeline_clrnet /
-# its runners. Camera calibration, resize and the metric stage still come from
-# inference_road_lane_segmentation.yaml; this file holds only what the new
-# front end adds.
+# Learned lane-detector front end (WWH-25), read only by pipeline_clrnet and its
+# runners. Camera, resize and the metric stage come from inference_road_lane_segmentation.yaml.
 
 clrnet:
-  # CLRNet source + culane_dla34.pth live outside the repo: CLRNET_ROOT in the
-  # environment, default D:/models/clrnet (see libs/inference/lane_detector.py).
-  conf_threshold: 0.4        # CLRNet's own CULane test setting
-  # Top share of the image cropped before the detector, as in CULane training
-  # (270 of 590 rows). Keep it: WWH-25 step 1 measured that uncropped input
-  # LOSES lines (OpenLane updown_straight 86.0 % -> 66.5 %, Town05 95.4 % ->
-  # 77.0 %) — the network has never seen the top of an image.
-  cut_frac: 0.457627         # 270 / 590
-  # Preprocessing and network input size — must match how the weights were
-  # trained. Released CULane weights: culane, 800x320. A fine-tune trained by
-  # CLRNet's own pipeline: naive, and its cut_height / img_w / img_h.
+  # CLRNet source + culane_dla34.pth live outside the repo: $CLRNET_ROOT, default
+  # D:/models/clrnet (libs/inference/lane_detector.py). Load everything below with
+  # lane_detector.CLRNet.from_config.
+  conf_threshold: 0.4   # CLRNet's CULane test setting
+  # Preprocessing must match how the weights were trained. The values below are for
+  # the released CULane weights (top 270/590 rows cropped; uncropped input loses lines).
+  cut_frac: 0.457627    # 270 / 590
   mode: culane
   img_w: 800
   img_h: 320
-  # weights: null            # null: $CLRNET_WEIGHTS or $CLRNET_ROOT/culane_dla34.pth
-  # Load all of the above with lane_detector.CLRNet.from_config.
+  # weights: null       # null: $CLRNET_WEIGHTS or $CLRNET_ROOT/culane_dla34.pth
   #
-  # OpenLane fine-tune, geometry B (WWH-25, chosen 2026-09-26): swap in
-  #   weights: <path to ft_B*.pth>
-  #   cut_frac: 0.0            # trained with cut_height 0
-  #   mode: naive              # CLRNet's own training preprocessing
-  #   img_w: 800
-  #   img_h: 320
-  # and re-measure fitting.max_depth_m below — it is a property of the weights.
+  # OpenLane fine-tune (geometry B, currently chosen: D:/models/clrnet/ft_full/ft_B_full_ep10.pth):
+  #   weights: <path>, cut_frac: 0.0, mode: naive, img_w: 800, img_h: 320
+  # and re-measure fitting.max_depth_m for it.
 
 fitting:
-  # Rows beyond the farthest verified paint row: "keep" (detector position,
-  # src = model) or "last_paint" (drop them). The image cannot tell unpainted
-  # road from road hidden behind a crest; WWH-25 step 3 runs both.
-  tail: keep
+  tail: keep              # Rows past the last paint row: "keep" (detector position, src=model) or "last_paint" (drop)
+  refine: none            # "none" keeps detector positions; "center" snaps paint rows to the stripe centre (measured worse)
+  nearfield_source: paint # Rows the near-field width calibrator uses: "paint" or "all" (paint-only: width p90 0.59 -> 0.23 m)
+  ego_guard: true         # Reject an ego pair whose near-field width is outside 2.5-4.5 m (guard_ego)
 
-  # Snap paint rows to the stripe centre ("center") or keep the detector's
-  # positions ("none"). WWH-25 step 3: snapping made pitch worse at every depth.
-  refine: none
-
-  # Rows the near-field width calibrator sees: "paint" (only rows the image
-  # shows paint on) or "all". Step 3: paint-only cut the width error p90
-  # 0.59 m -> 0.23 m (OpenLane), pitch unchanged.
-  nearfield_source: paint
-
-  # Reject an ego pair whose near-field width is outside 2.5-4.5 m
-  # (model_lane_fitting.guard_ego).
-  ego_guard: true
-
-  # No pitch output beyond this depth (m, the pitch stage's own z; estimated on
-  # the full curves, output trimmed — model_lane_fitting.trim_pitch_to_depth).
-  # The pretrained CULane weights
-  # draw far road as flat: grade-change ratio k 0.55-0.64 within 20 m, 0.27 at
-  # 20-30 m, 0.09 at 30-50 m (Town05), while the estimator on ground-truth
-  # lines keeps k >= 0.96. A property of the weights - re-measure after
-  # fine-tuning; null disables.
+  # No pitch output beyond this depth (m); the estimate uses the full curves, only
+  # the output is trimmed (trim_pitch_to_depth). 20 m is for the CULane weights,
+  # which draw far road as flat; re-measure for other weights. null disables.
   max_depth_m: 20
 
-  # Width in metres the metric stage assumes before a sequence has measured
-  # one. CENTRE-to-centre for this front end: the ELSED pipeline's 3.25
-  # (inner edge to inner edge) plus one 0.125 m stripe (half on each side).
+  # Width (m) used before a sequence has measured one. Centre to centre for this
+  # front end: the ELSED pipeline's 3.25 (inner edge to inner edge) + one 0.125 m stripe.
   last_resort_lane_width: 3.375

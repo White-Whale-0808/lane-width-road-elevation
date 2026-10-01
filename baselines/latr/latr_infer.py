@@ -18,6 +18,13 @@ import os, sys, json, pathlib, argparse, time
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 LATR_ROOT = pathlib.Path(os.environ.get('LATR_ROOT', 'D:/models/latr/LATR'))
+# setup_env() before any C extension (mmcv pulls in cv2). Loaded by file path, not as
+# `utils.env_setup`: registering this repo's `utils` package would shadow LATR's `utils`.
+import importlib.util
+_spec = importlib.util.spec_from_file_location('mono3d_env_setup', REPO / 'utils' / 'env_setup.py')
+_env = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_env)
+_env.setup_env()
 sys.path.insert(0, str(HERE))
 import latr_stubs
 latr_stubs.install()

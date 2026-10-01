@@ -59,6 +59,14 @@ def test_pick_ego_empty():
     assert pick_ego([], syn.IMG_W) == (None, None, None, None)
 
 
+def test_pick_ego_never_takes_one_line_for_both_sides():
+    # a line left of centre near the car that crosses the centre farther up
+    # (curve / lane change); with no right line it must not also become 'right'
+    crossing = np.array([[400.0, 511.0], [700.0, 300.0]])
+    left, right, _, _ = pick_ego([crossing], syn.IMG_W)
+    assert left is crossing and right is None
+
+
 def test_densify_every_integer_row_linear():
     rows, x = densify(np.array([[100.0, 410.4], [140.0, 400.2]]))
     assert rows[0] == 401 and rows[-1] == 410
@@ -160,6 +168,31 @@ def test_guard_one_side_untouched():
     assert _guard([r], None, r) == (None, r, "one_side")
 
 
+def test_guard_wide_replaces_with_ego_line_that_starts_higher():
+    """The ego left line starts above the neighbour's lowest row, so pick_ego
+    took the neighbour; the guard finds the ego line instead of dropping the side."""
+    nb, r = _line_at_offset(-5.1), _line_at_offset(1.7)
+    ego_l = _line_at_offset(-1.7)
+    ego_l = ego_l[ego_l[:, 1] <= 450.0]
+    left, right, why = _guard([nb, ego_l, r], nb, r)
+    assert left is ego_l and right is r and why == "wide_replaced"
+
+
+def test_guard_far_shared_row_left_unchecked():
+    """Near the horizon a pixel is metres of width: no verdict, no drop."""
+    rows = np.arange(syn.CY + 2.0, syn.CY + 6.0)
+    z = syn.F_Y * syn.CAM_H / (rows - syn.CY)
+    l = np.column_stack([syn.CX - syn.F_X * 5.0 / z, rows])      # a "10 m lane"
+    r = np.column_stack([syn.CX + syn.F_X * 5.0 / z, rows])
+    assert _guard([l, r], l, r) == (l, r, "far_unchecked")
+
+
+def test_guard_lines_sharing_no_row():
+    l, r = _line_at_offset(-1.7), _line_at_offset(1.7)
+    l, r = l[l[:, 1] >= 450.0], r[r[:, 1] <= 400.0]
+    assert _guard([l, r], l, r) == (l, r, "no_overlap")
+
+
 def _pitch_result():
     zs = np.linspace(3.0, 40.0, 38)
     return {"pitch_at": lambda z: float(z), "z_samples": zs, "pitch_samples": zs.copy(),
@@ -177,7 +210,10 @@ def test_trim_pitch_keeps_near_output_identical():
     assert t["widths"] is full["widths"]
     assert trim_pitch_to_depth(full, None) is full
     assert trim_pitch_to_depth(full, 100.0) is full
-    assert trim_pitch_to_depth(full, 1.0)["pitch_at"] is None
+    empty = trim_pitch_to_depth(full, 1.0)
+    assert empty["pitch_at"] is None and len(empty["z_samples"]) == 0
+    assert np.isnan(empty["z_visible_min"]) and np.isnan(empty["z_visible_max"])   # estimator contract
+    assert empty["widths"] is full["widths"]
 
 
 def test_model_curve_and_src_at():

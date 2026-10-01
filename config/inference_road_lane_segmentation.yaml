@@ -2,191 +2,70 @@ model:
   device: "cuda"
   model_name: "pidnet_l"
   weight_path: "pidnet_pretrained_model/PIDNet_L_Cityscapes_test.pt"
-  # weight_path: "models/road_segmentation_best.pth"  # The original Resnet101 model is too slow and not accurate enough, so we switched to PIDNet_L 
 
 input:
   image_path: "inference_datasets/carla_dataset_Town03_20260822_021432/images/000380.png"
   image_batch_path: "inference_datasets/carla_dataset_Town03_20260822_021432/images"
-  resize_size:
+  resize_size:  # [height, width]
     - 512
     - 1024
 
 road_segmentation:
-  # No parameters: PIDNet-L uses argmax over classes, and no morphological
-  # cleanup is applied to the mask (both tried and rejected, see the stage module)
+  # No parameters: PIDNet-L takes the argmax over classes, no morphological cleanup.
 
 line_segmentation:
-  min_segment_length_near: 65  # Length threshold at the bottom of the image (near camera)
-  min_segment_length_far: 0   # Length threshold at the top of the image (far / uphill); threshold is interpolated linearly between these two values based on segment mid-y
+  min_segment_length_near: 65  # ELSED length threshold (px) at the image bottom
+  min_segment_length_far: 0    # ... at the image top; interpolated linearly by segment mid-y
 
 lane_segmentation:
-  # Association tolerance, slope gates and model memory are all derived from
-  # pitch_estimation's f_x / f_y / camera_height. NOT from w_real: this stage
-  # does not take a lane width at all (2026-09-15) — the one width it needs,
-  # the cross-lane cap, it measures per frame.
-  track_bands: 16  # Horizontal bands for near-to-far continuity tracking (internally clamped to >= 16); independent of lane_fitting.num_bands
+  # Every threshold is derived from pitch_estimation's f_x / f_y / camera_height.
+  # This stage takes no lane width (the cross-lane cap is measured per frame).
+  track_bands: 16  # Bands for near-to-far continuity tracking (clamped to >= 16)
 
 lane_fitting:
-  num_samples: 80  # Fixed width-sample count, used only when samples_per_meter is unset (samples_per_meter scales with visible depth and is preferred)
-  samples_per_meter: 6  # Geometry mode: width-sample density in pitch_estimation, per meter of visible depth (scene-invariant); inner-chain points are dense per-row and not affected
+  num_samples: 80       # Width-sample count, used only when samples_per_meter is unset
+  samples_per_meter: 6  # Width samples per metre of visible depth (preferred)
 
 pitch_estimation:
-  f_x: 512  # Focal length calculated from camera intrinsics and resize dimensions
-  f_y: 455  # Correct for this dataset: captured at 1280x720 (fov90 -> f=640), resized to 1024x512 non-uniformly -> f_x=640*0.8=512, f_y=640*(512/720)=455
-  # LAST RESORT ONLY (stage C, 2026-09-18). The lane width is measured per frame
-  # from the near field (see below). This constant is used for a frame only when
-  # its sequence has NOT MEASURED ANY WIDTH YET — not when a frame fails, which
-  # reuses the sequence's last measurement. Those frames are reported as
-  # w_real_status = last_resort, so a pitch on this assumed scale is never
-  # mistaken for a measured one. It was called `w_real` until 2026-09-18 and
-  # was renamed so it cannot be read as a measured parameter.
-  # Delete the key (or set null) to output NO pitch for such frames instead.
-  #
-  # How wrong it can be: OpenLane Tier A inner widths span 2.82–4.43 m, and on
-  # CARLA it is 3.3226 against the GT-implied truth — so up to ~±30 % depth scale.
-  #
-  # The notes below are what the constant used to be and why 3.25.
-  #
-  # Inner-edge-to-inner-edge lane width (m). NOT carla's waypoint.lane_width (3.5),
-  # which is boundary-CENTRE to boundary-CENTRE (verified 2026-07-31: the projected
-  # 1.75 m line lands on the centre of the painted marking to within 9 mm, n=399).
-  #
-  # !! 3.25 IS SPECIFIC TO THIS ROAD'S MARKING LAYOUT !!
-  # This dataset's lane has DOUBLE YELLOW on the left and a SINGLE WHITE line on
-  # the right. Since w_real is inner-edge-to-inner-edge, each side is inset from
-  # the 3.5 m boundary-centre width by a different amount:
-  #
-  #     left  (SolidSolid, double yellow): inset = width + gap/2 = 0.125 + 0.0625 = 0.1875
-  #     right (Solid,      single white):  inset = width/2       =                  0.0625
-  #                                        total inset 0.25  ->  w_real = 3.25
-  #
-  # The two sides are ASYMMETRIC (1.5625 vs 1.6875 from the lane centre), which is
-  # harmless: w_px is a pixel DIFFERENCE and Y_3d only reads image rows, so only the
-  # SPACING enters the model, never the absolute positions.
-  #
-  # Change the marking layout and this number changes. On the same 3.5 m lane:
-  #     single + single   ->  3.5 - 0.125  = 3.375
-  #     double + single   ->  3.5 - 0.25   = 3.25    (this dataset)
-  #     double + double   ->  3.5 - 0.375  = 3.125
-  # A different lane_width shifts it again. Re-derive per road; do NOT carry 3.25
-  # over to another map, another lane, or a lane with different markings.
-  #
-  # 3.25 is the PHYSICAL value and is now backed by four independent measurements
-  # against a directly-measured road profile (dataset carla_dataset_Town03_20260818_195221,
-  # which records the forward road surface in world coordinates plus the full camera
-  # transform, so GT no longer has to be reconstructed from driving history):
-  #
-  #     height residual minimised                     3.248
-  #     mean height residual -> -H*delta              3.246
-  #     implied lane width, forward projection 2-15m  3.243 .. 3.260
-  #     cy = 256 constraint (ideal pinhole)           3.2432
-  #     map geometry + painted edges                  3.25
-  #         left  (SolidSolid, double yellow): 1.75 - (0.125 + gap/2) = 1.5625
-  #         right (Solid, single white):       1.75 -  0.125/2        = 1.6875
-  #
-  # HISTORY - this was 3.216 until 2026-08-18. That value was FITTED against a GT
-  # rebuilt from `collect_dist_m` + body pitch, and it was compensating errors in that
-  # rebuild, exactly the cancelling-pair structure of WWH-11. Two hypotheses about what
-  # it compensated were tested and REFUTED: the 3D-arc-length-vs-depth conversion (wrong
-  # sign, and only 0.03-0.99% in magnitude - the camera is rigid on the vehicle so it
-  # tilts WITH the road and a constant grade needs no correction), and a body/road pitch
-  # amplitude ratio (that measurement was itself an artifact of comparing two columns
-  # recorded 1.5 m apart). Once GT is measured rather than reconstructed, the physical
-  # value wins and the apparent ~1 px cy offset disappears.
-  #
-  # DO NOT tune this against profile MAE. MAE trades the z scale against pitch errors
-  # (on a rising profile, shrinking z reads nearer, flatter GT), so its optimum is
-  # systematically pulled low - it favoured 3.10-3.15 while the geometry says 3.25.
-  # Determine it from height/geometry; use MAE only to report accuracy.
-  last_resort_lane_width: 3.25
-  camera_height: 1.08  # Camera mount height above road (m): CAMERA_HEIGHT in carla_module/get_carlaDataset.py (the dataset collector). NOTE realtime_test.py mounts its camera at 2.4 m and overrides this. Used to derive lane_segmentation thresholds from projection geometry.
-  camera_forward_offset: 1.5  # Camera mount offset AHEAD of the vehicle origin (m): the x of carla.Transform(carla.Location(x=1.5, z=CAMERA_HEIGHT)) in get_carlaDataset.py. measurements.csv records collect_dist_m / gt_pitch_deg at the VEHICLE origin, so GT lookups for a point at camera depth z must use vehicle distance z + this offset.
-  method: windowed  # Pitch estimator: "windowed" (local z-window Theil-Sen, explicit spatial resolution) or "spline" (global weighted UnivariateSpline)
-  # 近場自標定（車道寬的唯一來源，階段 C 起一律開啟，沒有開關）：逐幀由近場
-  # 地平面（相機高錨）實測 w_real。門檻推導見 pitch_estimation.py 的 NEARFIELD_*
-  # 常數註解。量不到時（2026-09-18 使用者裁定）：
-  #   同一段連續片段內 -> 沿用上一次量到的值，不論多久以前；沿用多久（公尺/幀）
-  #                       寫進輸出 CSV 的 w_real_hold_m / w_real_hold_frames
-  #   片段內還沒量到過 -> 最後手段：用上面的 last_resort_lane_width，
-  #                       w_real_status=last_resort（鍵刪掉或設 null 則改成不輸出
-  #                       pitch，status=no_anchor）；原因寫進 w_real_reason，
-  #                       批次結尾印出統計
-  # 以下是這個功能的歷史（原本是預設關閉、退回上面那個常數的選項）。
-  #
-  # 2026-09-12（WWH-19）改了三處，因為原設計隱含綁死本專案這台相機：
-  #   視窗    寫死 z∈[2,5] m -> 由 f_y·h 推導（CARLA [2.30,4.02]、OpenLane
-  #           [8.22,10.11]）。舊視窗在 2.1 m 高的 OpenLane 相機上一列都取不到，
-  #           自標定等於從來沒跑過；改完是 100% 的幀都有估計。
-  #   主估計  w_real_med -> w_real_z0（Theil-Sen 截距，θ0-free）。逐路段誤差對
-  #           GT 深度仲裁：固定值 108 / med 51 / z0 46 mm（CARLA），
-  #           固定值 173 / med 189 / z0 35 mm（OpenLane Tier A）。
-  #   閘門    |θ0|≤0.3° -> 品質閘門（列數/跨距/殘差 MAD ＋ |θ0|≤3° 物理上界）。
-  #           舊閘門在高相機上擋掉 93% 的幀；而且改用 θ0-free 的截距之後，拿 θ0
-  #           擋幀等於擋掉本來已經修好的東西。
-  #   ⚠ 閘門擋得住雜訊，擋不住「自信地錯」：OpenLane 舊金山電車軌那段殘差 MAD
-  #     0.001 比正常幀的 0.002 還小，但寬度量成 1.58 m（真值 3.17）。那要在上游解。
-  #
-  # 動機與驗證（2026-08-28，三路線）。獨立仲裁＝GT 正向投影的隱含寬
-  # W_implied = w_meas·z_gt/f_x，不依賴近場假設：
-  #   full_road  逐 road_id 真寬 42:3.29 / 43:3.55 / 41:3.39→3.31
-  #              （單一 3.25 在 road 43 是 z 尺度 −8%）
-  #   down_hile  真寬 3.336，近場估計 3.328 → **誤差 8 mm**
-  #   uphile     真寬 3.254，近場估計偏 +0.05（持續坡的殘餘 θ0）
-  # 批次 MAE：full_road 0.2072→0.2112、uphile 0.2500→0.2436、
-  #           down_hile 0.3010→0.3204。
-  #
-  # ⚠ down_hile 那條「退步」不代表估計錯：該路段量到的 3.328 對真值只差
-  # 8 mm，MAE 卻偏好錯的 3.25 —— 正是上方 w_real 的 DO NOT tune 段所述、
-  # MAE 最優點系統性偏低的現象（三條路線一致：w 越小 MAE 越好）。
-  #
-  # 2026-09-12 三路線驗收（生產路徑，含 hold/run 政策）：
-  #   退回 fallback 的比例  80–95%  ->  5% / 31% / 35%（uphile / down / full）
-  #   逐路段寬度誤差（對 GT 深度仲裁，>=100 幀的長路段，平均）
-  #                        固定 3.25 = 108 mm  ->  自標定 52 mm
-  #   profile MAE          uphile 0.2500 -> 0.2696、down_hile 0.3010 -> 0.3467
-  #
-  # ⚠ 寬度變準、MAE 變差，兩者同時成立且不矛盾 —— 正是上方 w_real 那段
-  # 「DO NOT tune this against profile MAE」講的現象：MAE 拿 z 尺度換 pitch 誤差。
-  # 另一個原因是逐幀採納值本身會沿路飄（同一 road_id 內 std 0.07–0.21 m，
-  # 而且是幾十公尺尺度的慢飄，不是白噪：相鄰幀只差 3–4 mm，5 m 平滑無效）。
-  # 平滑視窗掃過（逐幀 MAE / 逐路段 MAE，mm）：無 89/52、5 m 89/46、20 m 80/49、
-  # 50 m 93/67 —— 差異不大且 50 m 會跨路段糊掉，所以不加平滑、少一個常數。
-  #
-  # 當時預設 false：寬度明確變好，但 profile MAE 退步 8–15%。2026-09-15 使用者
-  # 裁定 MAE 那部分先忽略、以真的適應各種路寬為優先，階段 C 因此改成一律開啟
-  # 並拿掉 fallback；MAE 退步的成因（被 3.25 抵消掉的第二個系統誤差）另案追。
+  # Intrinsics of THIS dataset: captured 1280x720 at fov 90 (f = 640), resized to
+  # 1024x512 non-uniformly -> f_x = 640 * 0.8 = 512, f_y = 640 * 512/720 = 455.
+  # Runners switch to a dataset's own camera (metadata.json) when it differs from
+  # this one — OpenLane, the OpenLane-camera CARLA set (libs/dataset_camera.py).
+  f_x: 512
+  f_y: 455
 
-# GT 不是 pipeline 的一個階段，是評估用的參考值，所以自成一區
+  # Used ONLY for a frame whose sequence has not measured any width yet (the width
+  # is otherwise measured per frame, see below); such frames are flagged
+  # w_real_status = last_resort. Delete the key / set null to output no pitch instead.
+  #
+  # Inner-edge to inner-edge (m), not CARLA's waypoint.lane_width (centre to centre).
+  # 3.25 is specific to this road: double yellow left + single white right on a 3.5 m
+  # lane (geometry and four independent measurements agree, 3.243-3.260). Other
+  # layouts on a 3.5 m lane: single+single 3.375, double+double 3.125.
+  #
+  # Do NOT tune this against profile MAE: MAE trades the depth scale against pitch
+  # error, so its optimum is systematically low (it prefers 3.10-3.15).
+  last_resort_lane_width: 3.25
+
+  camera_height: 1.08         # Camera height above the road (m), CAMERA_HEIGHT in get_carlaDataset.py
+  camera_forward_offset: 1.5  # Camera ahead of the vehicle origin (m); GT at camera depth z is looked up at z + this
+  method: windowed            # "windowed" (local z-window Theil-Sen) or "spline" (global weighted spline)
+
+  # 車道寬一律由近場地平面逐幀實測（門檻推導見 pitch_estimation.py 的 NEARFIELD_* 常數）。
+  # 這一幀量不到時：
+  #   同一段已量到過 -> 沿用上一次的值（多舊都沿用），沿用多久寫進 w_real_hold_m / _frames
+  #   同一段還沒量到 -> 用上面的 last_resort_lane_width，標 w_real_status=last_resort
+  # 原因寫進 w_real_reason，批次結尾印統計。
+  # ⚠ 品質閘門擋得住雜訊，擋不住「自信地錯」（例：OpenLane 電車軌量成 1.58 m，真值 3.17），要在選線階段擋。
+  # ⚠ 寬度變準時 profile MAE 可能反而變差（同上：MAE 拿深度尺度換 pitch 誤差）；以寬度正確為準。
+
 ground_truth:
-  # 量測式 GT 的高度來源（沒有 road_profile.csv 的舊資料集會自動退回回推式，
-  # 這個設定就沒有作用）：
-  #   auto     - 有 z_mesh 就用 mesh，沒有（WWH-14 之前的舊資料集）退回 analytic
-  #   analytic - road_profile.csv 的 z 欄，OpenDRIVE 的解析中心線
-  #   mesh     - z_mesh 欄，採集當下向下射線打到路面網格的高度
-  #
-  # 明確寫 mesh 而資料集沒有那欄會報錯；auto 才會退回。這是為了讓舊資料集照常
-  # 可用，不是讓打錯的設定默默生效。runner 會印 `GT source:` 說明實際選到哪個。
-  #
-  # 預設 mesh。三條獨立證據（2026-08-22 定案，過程中我兩度得出相反結論，
-  # 錯誤原因記在最後）：
-  #
-  # 1. 那個路面偏差是真的幾何，不是 cast_ray 的假象 ——
-  #    legacy GT（車身姿態，動力學）與 mesh GT（射線，幾何）相對 analytic 多出來
-  #    的結構，逐幀去均值後 corr median +0.990，100% 的幀 >0.5。兩條完全獨立的
-  #    量測路徑記錄到同一個東西。
-  # 2. 相機看得到 —— 預測相對 analytic 的偏離 vs 網格偏差，逐幀去均值 corr
-  #    median +0.909、81.2% >0.5；排列對照（別幀的形狀 / 隨機平滑曲線）是
-  #    −0.084 / −0.005，32%。逐幀迴歸斜率 +0.588 → 相機看到約 59% 的振幅。
-  # 3. w_real 判定更接近幾何值 —— 零平均高度殘差：mesh 3.2522、analytic 3.2486，
-  #    幾何值 3.2500。
-  #
-  # 官方批次（446 幀）：analytic mean 0.2688 / p90 0.7063；
-  #                     mesh     mean 0.2367 / p90 0.4647。
-  #
-  # ⚠ 不要用**絕對高度** MAE 判定這件事。GT 是 `P_world − cam_world`，換 z_mesh
-  # 只改剖面點；短視距幀的窗口整個落在偏差區裡，GT 曲線幾乎整條平移，絕對高度
-  # MAE 會爆掉（+132%）但那是平移不是形狀。扣掉每幀常數項後 mesh 反而較好。
-  # 我第一次就是踩這個坑得出「mesh 明顯更差」的錯誤結論。
+  # 評估用的參考值，不是 pipeline 的階段。高度來源：
+  #   auto     - 有 z_mesh 欄就用 mesh，沒有（WWH-14 之前的舊資料集）退回 analytic
+  #   analytic - road_profile.csv 的 z，OpenDRIVE 解析中心線
+  #   mesh     - z_mesh，採集時向下射線打到路面網格的高度（較準，證據見 libs/road_profile_gt.py）
+  # 明確寫 mesh 而資料集沒有那欄會報錯；只有 auto 會退回。
+  # ⚠ 不要用「絕對高度」MAE 比較兩者：它被每幀一個常數偏移主導，要先扣掉每幀常數項。
   height_source: "auto"
 
 visualization:
@@ -197,5 +76,5 @@ csv_io:
   input_dir: "inference_datasets/carla_dataset_Town03_20260822_021432/measurements.csv"
   output_dir: "outputs/measurements.csv"
   measurements_csv: "inference_datasets/carla_dataset_Town03_20260822_021432/measurements.csv"
-  problem_csv: "outputs/problem.csv"  # Frames with profile_mae above problem_mae_threshold, sorted worst-first
-  problem_mae_threshold: 2.0  # Degrees; frames above this are flagged in problem_csv
+  problem_csv: "outputs/problem.csv"  # Frames with profile_mae above problem_mae_threshold, worst first
+  problem_mae_threshold: 2.0          # Degrees

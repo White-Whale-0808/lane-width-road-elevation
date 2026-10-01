@@ -40,7 +40,11 @@ uv run --no-sync python -m pytest
 python main.py
 ```
 
-All inference config lives in `config/inference_road_lane_segmentation.yaml`.
+Inference config: `config/inference_road_lane_segmentation.yaml` (camera, resize, the ELSED
+front end and the metric stage) and `config/lane_detector_clrnet.yaml` (the CLRNet front end:
+weights + preprocessing, which must match each other, fitting options, and its own
+centre-to-centre `last_resort_lane_width`). Runners take the camera from the dataset's
+`metadata.json` when it describes a different camera than the config (`libs/dataset_camera.py`).
 `openlane_module/` converts the OpenLane dataset into this project's format and
 holds the tools that measure what that data can verify — see its own README
 (including the official 3D-lane scorer and the ego-lane Z-error evaluation, WWH-26).

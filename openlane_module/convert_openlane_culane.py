@@ -89,7 +89,7 @@ def lanes_to_culane(lane_lines, width, height, extend_bottom=False):
     return out
 
 
-def frame_kind(lane_lines, width, height):
+def frame_kind(lane_lines, width, height, lanes=None):
     """Why a frame has (or lacks) attribute-1..4 labels:
 
     labelled        at least one attribute-1..4 lane inside the image
@@ -99,8 +99,13 @@ def frame_kind(lane_lines, width, height):
     ego_unlabelled  an attribute-0 PAINT line beside the ego position
                     (|lateral| ≤ EGO_LAT_M somewhere in EGO_Z_RANGE_M ahead)
     far_paint       attribute-0 paint lines, none beside the ego position
+
+    `lanes`: this frame's lanes_to_culane result if the caller already has it
+    (only whether it is empty matters), so it is not converted twice.
     """
-    if lanes_to_culane(lane_lines, width, height):
+    if lanes is None:
+        lanes = lanes_to_culane(lane_lines, width, height)
+    if lanes:
         return 'labelled'
     if any(ln.get('attribute', 0) in SLOTS for ln in lane_lines):
         return 'out_of_image'
@@ -228,7 +233,8 @@ def main(argv=None):
             if js.name.startswith('._'):
                 continue
             data = json.loads(js.read_text(encoding='utf-8'))
-            kind = frame_kind(data['lane_lines'], SRC_W, SRC_H)
+            lanes = lanes_to_culane(data['lane_lines'], SRC_W, SRC_H, a.extend_bottom)
+            kind = frame_kind(data['lane_lines'], SRC_W, SRC_H, lanes=lanes)
             kinds[kind] = kinds.get(kind, 0) + 1
             if kind == 'ego_unlabelled' and a.drop_ego_unlabelled:
                 continue
@@ -238,7 +244,8 @@ def main(argv=None):
                 continue
             img = cv2.imread(str(src_img), cv2.IMREAD_UNCHANGED)
             h, w = img.shape[:2]
-            lanes = lanes_to_culane(data['lane_lines'], w, h, a.extend_bottom)
+            if (w, h) != (SRC_W, SRC_H):             # OpenLane is 1920x1280; convert again only if not
+                lanes = lanes_to_culane(data['lane_lines'], w, h, a.extend_bottom)
             if not lanes:
                 n_empty += 1
                 if a.skip_empty:

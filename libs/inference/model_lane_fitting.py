@@ -2,6 +2,7 @@ import numpy as np
 
 from libs.inference.geometry import CameraGeometry
 from libs.inference.paint_evidence import _RIDGE_THR, _STRIPE_M, _gray
+from libs.inference.pitch_estimation import _empty_result, nearfield_window
 
 """
 Lane fitting for a learned 2D lane detector front end (WWH-25).
@@ -57,25 +58,26 @@ _BG_PX = 6
 # existing range, see guard_ego.
 _EGO_W_MIN, _EGO_W_MAX = 2.5, 4.5
 
+# guard_ego checks the width only where the flat-ground depth is trustworthy:
+# up to this multiple of the near-field window's far end (OpenLane ~20 m,
+# CARLA ~8 m). Farther out a pixel of noise is a large width error and the road
+# need not be the wheel plane, so the pair is left unchecked instead.
+_GUARD_MAX_Z_FACTOR = 2.0
+
 
 def trim_pitch_to_depth(pitch_curve, max_depth_m):
     """The pitch result with everything beyond max_depth_m removed — the
     estimate itself is made on the FULL curves, only the output is trimmed.
 
-    Trimming the output rather than the curves keeps the near field exactly as
-    it was: an earlier version cut the curves before estimation, and the
-    changed sampling moved Town05's 5-10 m pitch error 0.141° -> 0.160°.
-    The depth is the pitch stage's own z, so "no pitch beyond max_depth_m"
-    holds for what is reported. pitch_at is clamped at the new far end (the
-    estimator already clamps at its visible range). Nothing left ⇒ the
-    estimator's empty result. None max_depth_m: unchanged.
+    Trimming the output rather than the curves keeps the near field unchanged
+    (cutting the curves first changes the sampling and made 5-10 m worse).
+    The depth is the pitch stage's own z. pitch_at is clamped at the new far
+    end. Nothing left ⇒ the estimator's empty result. None max_depth_m: unchanged.
 
-    Why a limit at all: the pretrained detector draws the far road as flat —
-    WWH-25 measured its grade-change ratio k at 0.55-0.64 within 20 m but 0.27
-    at 20-30 m and 0.09 at 30-50 m (Town05), while the pitch estimator on
-    ground-truth lines keeps k >= 0.96 there (so neither the estimator nor
-    pixel resolution is the limit). The value is a property of the WEIGHTS;
-    re-measure after fine-tuning.
+    Why a limit at all: the CULane weights draw the far road as flat (grade-change
+    ratio k 0.55-0.64 within 20 m, 0.09 at 30-50 m on Town05, while the estimator
+    on ground-truth lines keeps k >= 0.96). The value is a property of the
+    WEIGHTS; re-measure for other weights.
     """
     if max_depth_m is None or pitch_curve.get("pitch_at") is None:
         return pitch_curve
@@ -85,9 +87,7 @@ def trim_pitch_to_depth(pitch_curve, max_depth_m):
         return pitch_curve
     out = dict(pitch_curve)
     if not keep.any():
-        out.update(pitch_at=None, z_samples=np.array([]), pitch_samples=np.array([]),
-                   y_samples=np.array([]), z_points=np.array([]), y_points=np.array([]),
-                   z_visible_min=None, z_visible_max=None)
+        out.update(_empty_result())           # same contract as the estimator's empty result
         return out
     for key in ("z_samples", "pitch_samples", "y_samples"):
         out[key] = np.asarray(pitch_curve[key])[keep]
@@ -132,13 +132,15 @@ def pick_ego(lanes, image_width):
     y_hi = int(np.floor(max(ys[-1] for ys, _ in spans)))
     y_lo = int(np.ceil(min(ys[0] for ys, _ in spans)))
     picked = {"L": (None, None), "R": (None, None)}
+    taken = {"L": None, "R": None}             # index picked per side: never both sides
     for y in range(y_hi, y_lo - 1, -1):
         for side in ("L", "R"):
             if picked[side][0] is not None:
                 continue
+            other = taken["R" if side == "L" else "L"]
             best, best_d = None, np.inf
             for i, (ys, xs) in enumerate(spans):
-                if not ys[0] <= y <= ys[-1]:
+                if i == other or not ys[0] <= y <= ys[-1]:
                     continue
                 x = float(np.interp(y, ys, xs))
                 if (side == "L") != (x < cx):
@@ -147,6 +149,7 @@ def pick_ego(lanes, image_width):
                     best, best_d = i, abs(x - cx)
             if best is not None:
                 picked[side] = (lanes[best], y)
+                taken[side] = best
         if picked["L"][0] is not None and picked["R"][0] is not None:
             break
     return picked["L"][0], picked["R"][0], picked["L"][1], picked["R"][1]
@@ -172,39 +175,73 @@ def guard_ego(lanes, left, right, f_x, f_y, camera_height, image_width, image_he
                   lane). Replace it by the next line farther out on that side
                   if that makes the width plausible, else drop it.
       too wide:   the side farther from the centre is suspect (the neighbour
-                  lane's line). Nothing nearer the centre exists on that side
-                  (pick_ego took the nearest), so drop it.
+                  lane's line). Replace it by a line on that side nearer the
+                  centre that gives a plausible width at the nearest row it
+                  shares with the other side — pick_ego only compared lines
+                  covering its own decision row, so the real ego line may start
+                  higher up — else drop it.
 
-    The two bounds are not measured here: they are the project's plausible
-    lane-width range (openlane_module.convert_openlane WIDTH_MIN/MAX, the
-    range WWH-21 proposes). The near field sits on the plane the wheels are
-    on, so this depth needs no flat-road assumption about the road ahead.
+    The width is checked only at rows no deeper than _GUARD_MAX_Z_FACTOR times
+    the near-field window's far end; beyond that the pair is returned unchecked
+    ("far_unchecked"). The bounds are the project's plausible lane-width range
+    (openlane_module.convert_openlane WIDTH_MIN/MAX, the range WWH-21 proposes).
 
     Returns (left, right, reason): reason is "ok", "narrow_replaced",
-    "narrow_dropped", "wide_dropped" or "one_side" (nothing to check).
+    "narrow_dropped", "wide_replaced", "wide_dropped", "far_unchecked",
+    "no_overlap" (the two lines share no row) or "one_side" (nothing to check).
     """
     if left is None or right is None:
         return left, right, "one_side"
     cx, cy = image_width / 2.0, image_height / 2.0
-    y = min(np.max(np.asarray(left)[:, 1]), np.max(np.asarray(right)[:, 1]),
-            image_height - 1.0)
-    if y - cy <= 1.0:
-        return left, right, "one_side"
-    z = f_y * camera_height / (y - cy)
+    z_max = _GUARD_MAX_Z_FACTOR * nearfield_window(f_y, camera_height, image_height)[1]
 
-    def width(l, r):
-        return (_x_at(r, y) - _x_at(l, y)) * z / f_x
+    def near_row(a, b):
+        """Nearest image row both lines cover, or None."""
+        y = min(np.max(np.asarray(a)[:, 1]), np.max(np.asarray(b)[:, 1]), image_height - 1.0)
+        return y if _x_at(a, y) is not None and _x_at(b, y) is not None else None
 
-    if _x_at(left, y) is None or _x_at(right, y) is None:
-        return left, right, "one_side"          # the two lines never share a row
-    w = width(left, right)
+    def depth(y):
+        return f_y * camera_height / (y - cy) if y - cy > 1.0 else np.inf
+
+    def width_at(l, r, y):
+        return (_x_at(r, y) - _x_at(l, y)) * depth(y) / f_x
+
+    y = near_row(left, right)
+    if y is None:
+        return left, right, "no_overlap"
+    if depth(y) > z_max:
+        return left, right, "far_unchecked"
+    w = width_at(left, right, y)
     if _EGO_W_MIN <= w <= _EGO_W_MAX:
         return left, right, "ok"
     xl, xr = _x_at(left, y), _x_at(right, y)
     if w > _EGO_W_MAX:
-        if abs(xl - cx) > abs(xr - cx):
-            return None, right, "wide_dropped"
-        return left, None, "wide_dropped"
+        suspect_left = abs(xl - cx) > abs(xr - cx)
+        kept = right if suspect_left else left
+        suspect = left if suspect_left else right
+        best, best_y = None, -np.inf
+        for ln in lanes:
+            if ln is left or ln is right:
+                continue
+            yc = near_row(ln, kept)
+            if yc is None or depth(yc) > z_max or yc <= best_y:
+                continue
+            x = _x_at(ln, yc)
+            if (x >= cx) if suspect_left else (x <= cx):
+                continue                        # not on the suspect side
+            xs = _x_at(suspect, yc)
+            if xs is not None and abs(x - cx) >= abs(xs - cx):
+                continue                        # not nearer the centre than the suspect
+            l2, r2 = (ln, kept) if suspect_left else (kept, ln)
+            if _EGO_W_MIN <= width_at(l2, r2, yc) <= _EGO_W_MAX:
+                best, best_y = ln, yc
+        if best is not None:
+            return (best, right, "wide_replaced") if suspect_left else (left, best, "wide_replaced")
+        return (None, right, "wide_dropped") if suspect_left else (left, None, "wide_dropped")
+
+    def width(l, r):
+        return width_at(l, r, y)
+
     suspect_left = abs(xl - cx) < abs(xr - cx)
     x_s = xl if suspect_left else xr
     alts = []
