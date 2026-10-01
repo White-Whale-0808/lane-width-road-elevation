@@ -1,0 +1,34 @@
+# Learned lane-detector front end (WWH-25), read only by pipeline_clrnet and its
+# runners. Camera, resize and the metric stage come from inference_road_lane_segmentation.yaml.
+
+clrnet:
+  # CLRNet source + culane_dla34.pth live outside the repo: $CLRNET_ROOT, default
+  # D:/models/clrnet (libs/inference/lane_detector.py). Load everything below with
+  # lane_detector.CLRNet.from_config.
+  conf_threshold: 0.4   # CLRNet's CULane test setting
+  # Preprocessing must match how the weights were trained. The values below are for
+  # the released CULane weights (top 270/590 rows cropped; uncropped input loses lines).
+  cut_frac: 0.457627    # 270 / 590
+  mode: culane
+  img_w: 800
+  img_h: 320
+  # weights: null       # null: $CLRNET_WEIGHTS or $CLRNET_ROOT/culane_dla34.pth
+  #
+  # OpenLane fine-tune (geometry B, currently chosen: D:/models/clrnet/ft_full/ft_B_full_ep10.pth):
+  #   weights: <path>, cut_frac: 0.0, mode: naive, img_w: 800, img_h: 320
+  # and re-measure fitting.max_depth_m for it.
+
+fitting:
+  tail: keep              # Rows past the last paint row: "keep" (detector position, src=model) or "last_paint" (drop)
+  refine: none            # "none" keeps detector positions; "center" snaps paint rows to the stripe centre (measured worse)
+  nearfield_source: paint # Rows the near-field width calibrator uses: "paint" or "all" (paint-only: width p90 0.59 -> 0.23 m)
+  ego_guard: true         # Reject an ego pair whose near-field width is outside 2.5-4.5 m (guard_ego)
+
+  # No pitch output beyond this depth (m); the estimate uses the full curves, only
+  # the output is trimmed (trim_pitch_to_depth). 20 m is for the CULane weights,
+  # which draw far road as flat; re-measure for other weights. null disables.
+  max_depth_m: 20
+
+  # Width (m) used before a sequence has measured one. Centre to centre for this
+  # front end: the ELSED pipeline's 3.25 (inner edge to inner edge) + one 0.125 m stripe.
+  last_resort_lane_width: 3.375

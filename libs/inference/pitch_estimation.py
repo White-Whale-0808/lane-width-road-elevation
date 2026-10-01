@@ -8,87 +8,44 @@ WINDOW_FRAC = 0.15
 WINDOW_MIN_M = 1.0
 
 # ---------------------------------------------------------------- near field
-# The window is DERIVED from the camera, not hand-set (WWH-19, 2026-09-12).
-# The old fixed z ∈ [2, 5] m is a property of this project's 1.08 m camera: on
-# OpenLane's 2.116 m / 828 px camera the image bottom row already looks 6.85 m
-# ahead, so that window contains ZERO rows and the whole self-calibration
-# silently never ran. What actually sets the geometry is f_y·h:
+# The window is derived from the camera (f_y·h), not hand-set:
 #
 #     z(y) = f_y·h / (y − cy)      bottom row  ->  z_bottom = f_y·h / (H/2)
 #
-# Lower bound: start a little past the bottom row (hood, lens edge, the rows
-# where the curves are least reliable).
-# Upper bound, two constraints, take the nearer:
-#   curvature — the anchor assumes the road ahead IS the wheel plane; a vertical
-#               curve of radius R deviates z²/(2R), i.e. a relative depth error
-#               z²/(2·R·h), so z_hi <= sqrt(2·R·h·tol). Note the h in the
-#               denominator: a HIGHER camera tolerates a deeper window.
-#   sampling  — the window holds f_y·h·(1/z_lo − 1/z_hi) image rows; the
-#               Theil-Sen intercept needs a decent number of them.
-# When the two do not intersect (OpenLane: curvature says 5.63 m but the window
-# cannot start before 8.22 m) sampling wins and `curvature_ok` comes back False
-# — that camera's near-field anchor carries ~1.6% of curvature bias no matter
-# how the parameters are chosen. That is a property of the mount, not a bug.
+# Lower bound: a little past the bottom row. Upper bound, the nearer of:
+#   curvature — the anchor assumes the road ahead is the wheel plane; a vertical
+#               curve of radius R gives a relative depth error z²/(2·R·h), so
+#               z_hi <= sqrt(2·R·h·tol)
+#   sampling  — the window holds f_y·h·(1/z_lo − 1/z_hi) rows; the intercept
+#               needs enough of them
+# When they do not intersect sampling wins and `curvature_ok` is False: that
+# camera's anchor carries a curvature bias (OpenLane: window 8.22–10.11 m, ~1.6 %).
 NEARFIELD_Z_LO_FACTOR = 1.2
 NEARFIELD_MIN_ROWS = 40
 NEARFIELD_CURV_R_M = 1500.0    # worst-case vertical curve (OpenLane 60 m rise p90)
 NEARFIELD_CURV_TOL = 0.005     # tolerable anchor depth error from that curvature
 NEARFIELD_Z_HI_FACTOR_CAP = 3.0
-# Quality gate (replaces the old |θ0| <= 0.3° gate, which rejected 93% of frames
-# on a high camera and is redundant now that the headline estimate is the
-# θ0-free intercept). What is left to reject is a fit that is merely noisy:
-#   - too few rows / too short a z span for an intercept extrapolation
-#   - residual scatter beyond what ~2 px of edge noise explains
-#     (a width sample is z·w_px/f_x, so 1 px of edge noise is z/f_x metres)
-#   - |θ0| past any plausible mounting/support-plane angle
-# ⚠ It cannot reject a CONFIDENTLY wrong fit. Measured on OpenLane's San
-# Francisco tram-track segment, where the tracker locks onto the rails: the
-# residual MAD there is 0.001 m — SMALLER than a healthy frame's 0.002 — while
-# the width is 1.58 m against a true 3.17 m. Rails are straight, parallel and
-# bright, so the near-field fit is clean; it is simply fitted to the wrong
-# pair of lines. That failure has to be caught upstream, in line selection.
+# Quality gate: rejects a merely noisy fit — too few rows, too short a z span,
+# residual scatter beyond ~2 px of edge noise (1 px is z/f_x metres), or |θ0|
+# past any plausible mounting angle.
+# ⚠ It cannot reject a confidently wrong fit (OpenLane tram tracks: residual MAD
+# below a healthy frame's, width 1.58 m vs 3.17 true). Catch that in line selection.
 NEARFIELD_MIN_POINTS = 8
 NEARFIELD_MIN_SPAN_FRAC = 0.5
 NEARFIELD_RESID_PX = 2.0
 NEARFIELD_THETA0_MAX_DEG = 3.0
-# Adopt policy (full_road acceptance 2026-08-28, verified against the
-# GT-projected implied width): adoption requires the gate to stay open across
-# a minimum stretch of travel: at a curvature INFLECTION the w(z) trend crosses
-# zero while the bias is at its largest (θ0 is blind there for an isolated
-# frame — s161 adopted a 2.9 reading that way), whereas genuine support-plane
-# stretches pass for many metres in a row.
-#
-# A run survives ONE failed frame (2026-09-18). A near field that flickers —
-# every other frame with no rows — never completed an unbroken run: OpenLane
-# 17612 output nothing for 30 frames while its readings were good (it now
-# adopts 2.99 m against 2.88 true). One failure is a dropped observation;
-# two in a row mean the gate really closed. Replayed offline over all recorded
-# frames (CARLA 2,421 + OpenLane Tier A 488), width error vs truth:
-#     rule                         CARLA med/p90   OpenLane frames with a width
-#     unbroken run                 2.0 / 6.2 %     409
-#     survives one failed frame    1.8 / 6.2 %     444
-#     any pass within z_hi         1.9 / 10.1 %    444   <- rejected: at CARLA's
-#       0.125 m/frame a gate that reopens for a few frames after several
-#       failures is the inflection case, and a pass from before confirmed it
+# Adopt policy: a width is adopted only after passes span NEARFIELD_MIN_RUN_M of
+# travel — at a curvature inflection an isolated frame passes with its bias at
+# its largest. A run survives one failed frame (a flickering near field is a
+# dropped observation; two failures in a row mean the gate really closed).
+# Without `advance_to` the run is judged on frame count alone.
 NEARFIELD_MIN_RUN_M = 0.5
 NEARFIELD_MIN_RUN_FRAMES = 2       # a run is at least two frames, whatever the spacing
 NEARFIELD_RUN_MAX_DROPOUT = 1      # consecutive failed frames a run survives
-# ⚠ The frame-count fallbacks are gone (WWH-19). They assumed ~0.1 m/frame,
-# which is this project's CARLA capture; OpenLane runs at 0.96 m/frame, where
-# the old 0.5 m minimum run was satisfied by a SINGLE frame. Without
-# `advance_to` the run is judged on frame count alone.
-#
-# Hold policy (stage C, decided 2026-09-18): within one continuous sequence the
-# last adopted value is held for as long as it takes — however stale — and how
-# stale it is gets reported (`hold_m` / `hold_frames`) instead of being silently
-# swapped for a constant. A frame with nothing adopted yet gets no width from
-# here (`status` "no_anchor", `reason` says why); the pipeline then falls to
-# the config's `last_resort_lane_width`, FLAGGED as such, or outputs no pitch.
-# The calibrator itself knows no constant. The previous rule — hold only
-# across the window's far edge, then fall back to the configured w_real —
-# replaced a measured-but-old width with an assumed one, which is never closer:
-# lane width does drift along a road (full_road road 41: 3.39 → 3.31), but the
-# assumed constant is off by 108–173 mm against the measured 35–52 mm.
+# Hold policy: within one continuous sequence the last adopted value is held
+# however stale, and its age is reported (`hold_m` / `hold_frames`). Before the
+# first adoption there is no value (`status` "no_anchor"); the pipeline then uses
+# the flagged last-resort constant or outputs no pitch. The calibrator knows no constant.
 
 
 def back_project_widths(widths, f_x, f_y, image_height, w_real):
@@ -177,23 +134,16 @@ def estimate_w_real_nearfield(widths, f_x, f_y, image_height, camera_height,
         resid_mad  : robust scatter about the Theil-Sen line (m)
         quality_ok : passes the NEARFIELD_* quality gate (see the constants)
 
-    Measured per-segment error of each estimate against a GT-depth arbiter
-    (WWH-19, 2026-09-12; CARLA per road_id / OpenLane Tier A per segment):
+    Per-segment width error vs GT depth (CARLA / OpenLane): fixed constant
+    108 / 173 mm, median 51 / 189 mm, intercept 46 / 35 mm. A quadratic
+    intercept also absorbs curvature but diverges when the window starts far
+    out (OpenLane), so the linear intercept is used for both cameras.
+    ⚠ The extrapolation to z=0 amplifies line-position drift across the window
+    about 5x on OpenLane (window 1.9 m long, 9 m out) — the dominant per-frame
+    width error there (WWH-26).
 
-                       CARLA      OpenLane
-        fixed w_real    108 mm      173 mm
-        w_real_med       51 mm      189 mm
-        w_real_z0        46 mm       35 mm      <- adopted
-        quadratic        31 mm       94 mm (diverges: long extrapolation lever)
-
-    The quadratic intercept absorbs road curvature as well as θ0 and wins on
-    CARLA, but its extrapolation to z=0 is unstable when the window starts far
-    out (z_lo/span 1.37 on CARLA vs 4.46 on OpenLane). One estimator for both
-    cameras was the explicit call, so the linear intercept it is.
-
-    Input `widths` is the usual (y_pixel, pixel_width) array. The pipeline
-    consumes this through NearfieldWidthCalibrator (quality gate + hold); the
-    validation evidence lives in debug/w_real_variants.py.
+    Input `widths` is the usual (y_pixel, pixel_width) array; the pipeline uses
+    this through NearfieldWidthCalibrator (quality gate + hold).
     """
     if z_near_min is None or z_near_max is None:
         z_auto_lo, z_auto_hi, _ = nearfield_window(f_y, camera_height,
@@ -306,8 +256,8 @@ class NearfieldWidthCalibrator:
       hold_frames  frames since the adoption in use (0 when measured)
       hold_m       metres since it; None without odometry
 
-    Only the metric stage consumes the value: stages 1-3 take no lane width
-    (2026-09-15), and truncate_at_depth_jump works in lane-width units.
+    Only the metric stage consumes the value: stages 1-3 take no lane width,
+    and truncate_at_depth_jump works in lane-width units.
     """
 
     def __init__(self, f_x, f_y, image_height, camera_height, *, sequence=True):
@@ -414,9 +364,8 @@ def sample_widths_from_curves(left_curve, right_curve, num_samples, *,
     is `samples_per_meter` × the visible depth range, or a fixed `num_samples`
     when samples_per_meter is unset.
 
-    Sampling uniformly in y instead was the pre-WWH-9 behaviour and is gone:
-    y-uniform spends most of its samples on the near few metres (z ∝ 1/(y-cy)),
-    which is exactly where the pitch profile needs them least.
+    (Sampling uniformly in y would spend most samples on the near few metres,
+    z ∝ 1/(y−cy), where the pitch profile needs them least.)
     """
     if left_curve is None or right_curve is None:
         return np.empty((0, 2))
@@ -522,10 +471,9 @@ def estimate_pitch_windowed(widths, f_x, f_y, image_height, w_real,
     z_c, pitch is the Theil-Sen slope of the (z, Y_3d) points within
     |z - z_c| <= max(window_min_m, window_frac·z_c). The window IS the
     spatial resolution of the profile — it grows with z for the same reason
-    the spline down-weights far points (depth noise ∝ z²). There is NO
-    global residual filter: the local median is robust by itself, and the
-    global Theil-Sen MAD filter used to chop contiguous near/far tails
-    (frame 84, pre-refinement). Windows short on points expand to the
+    the spline down-weights far points (depth noise ∝ z²). No global
+    residual filter: the local median is robust by itself, and a global one
+    chops contiguous near/far tails. Windows short on points expand to the
     min_window_points nearest samples.
 
     Same input/return contract as estimate_pitch_from_widths.
@@ -587,10 +535,9 @@ def estimate_pitch_from_widths(widths, f_x, f_y, image_height, w_real,
                                n_pitch_samples: int = 200):
     """Estimate a continuous pitch(z) curve from per-band lane widths.
 
-    Preprocessing (IQR width filter → depth/Y_3d → depth cap → sort →
-    global Theil-Sen MAD residual filter) is unchanged from the banded version.
-    A weighted UnivariateSpline on Y(z) replaces the per-band Theil-Sen loop;
-    analytical differentiation gives a smooth, continuous pitch(z).
+    Preprocessing: IQR width filter → depth/Y_3d → depth cap → sort → global
+    Theil-Sen MAD residual filter. A weighted UnivariateSpline on Y(z), then
+    analytical differentiation, gives a smooth, continuous pitch(z).
 
     Physical weights: w_i = 1/z_i^2 because depth uncertainty scales as z^2
     (z = f·W/width, so dz ∝ z²·dwidth). Far points are naturally down-weighted,

@@ -52,7 +52,7 @@ def infer_one(
     w_real_calibrator
         pitch_estimation.NearfieldWidthCalibrator, one instance per continuous
         image sequence: the lane width is MEASURED from the near field, never
-        configured (stage C, 2026-09-18). Omit it for a lone image and a
+        configured. Omit it for a lone image and a
         one-shot calibrator (sequence=False) is used. Only the metric stage
         needs the width — stages 1-3 take none, truncate_at_depth_jump works
         in lane-width units.

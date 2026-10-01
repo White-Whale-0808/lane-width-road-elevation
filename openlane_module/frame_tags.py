@@ -66,6 +66,25 @@ def load_cases(ol_root):
     return cases
 
 
+def curvature(xl, xr, z0):
+    """50 m 內車道中心線偏離弦線的最大橫向量（sagitta, m）與航向變化（度）。
+
+    ``xl`` / ``xr`` 是 inner_pair 回傳、已依前向排序的 xyz；``z0`` 為兩線共同起點。
+    共同可見不足 10 m 時回 (nan, nan)。
+    """
+    c1 = min(xl[0].max(), xr[0].max(), z0 + CURV_SPAN)
+    if c1 - z0 < 10.0:
+        return np.nan, np.nan
+    x = np.arange(z0, c1, 0.5)
+    yc = 0.5 * (np.interp(x, xl[0], xl[1]) + np.interp(x, xr[0], xr[1]))
+    chord = np.interp(x, [x[0], x[-1]], [yc[0], yc[-1]])
+    sag = float(np.abs(yc - chord).max())
+    co = np.polyfit(x, yc, 2)
+    head = float(np.degrees(np.arctan(np.polyval(np.polyder(co), x[-1]))
+                            - np.arctan(np.polyval(np.polyder(co), x[0]))))
+    return sag, head
+
+
 def scan(ol_root, grade_min=0.0, quiet=False):
     """掃 validation split，回傳 (逐幀表, 篩選漏斗)。"""
     ol_root = Path(ol_root)
@@ -105,18 +124,7 @@ def scan(ol_root, grade_min=0.0, quiet=False):
                 reject["flat"] += 1; continue
             reject["ok"] += 1
 
-            # 曲率：50 m 內車道中心線偏離弦線的最大橫向量
-            c1 = min(xl[0].max(), xr[0].max(), z0 + CURV_SPAN)
-            if c1 - z0 >= 10.0:
-                x = np.arange(z0, c1, 0.5)
-                yc = 0.5 * (np.interp(x, xl[0], xl[1]) + np.interp(x, xr[0], xr[1]))
-                chord = np.interp(x, [x[0], x[-1]], [yc[0], yc[-1]])
-                sag = float(np.abs(yc - chord).max())
-                co = np.polyfit(x, yc, 2)
-                head = float(np.degrees(np.arctan(np.polyval(np.polyder(co), x[-1]))
-                                        - np.arctan(np.polyval(np.polyder(co), x[0]))))
-            else:
-                sag = head = np.nan
+            sag, head = curvature(xl, xr, z0)
             key = (seg.name, jf.stem)
             sc = scene.get(seg.name, {})
             rows.append(dict(

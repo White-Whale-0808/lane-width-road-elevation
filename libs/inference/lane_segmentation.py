@@ -4,103 +4,44 @@ import numpy as np
 Lane segmentation via near-to-far continuity tracking, with geometry-derived
 thresholds.
 
-Tracking design (see docs/papers/lane_segmentation_design_logic.drawio):
-  seed at the bottom (innermost rule), track upward band by band using a local
-  line model, re-seed past dead ends (junctions).
+Tracking: seed at the bottom (innermost rule), track upward band by band using
+a local line model, re-seed past dead ends (junctions).
 
-Parameter derivation (see docs/papers/lane_segmentation_design_logic.drawio):
-  Under the flat-ground pinhole model with camera height h,
+Thresholds come from the flat-ground pinhole model with camera height h:
 
-      x - cx = f_x * X / z          z(y) = f_y * h / (y - cy)
-      =>  x - cx = (f_x / f_y) * (X / h) * (y - cy)
+    x - cx = f_x * X / z          z(y) = f_y * h / (y - cy)
 
-  so every "lateral distance" threshold has an exact pixel form at row y:
-      px(X, y) = f_x * X / z(y)
-  and a lane line at lateral offset X has image slope dy/dx = f_y*h/(f_x*X).
+so a lateral distance X has the pixel form px(X, y) = f_x * X / z(y), and a
+lane line at lateral offset X has image slope dy/dx = f_y*h/(f_x*X). Association
+tolerance, cross-lane cap, slope gates and model memory are all stated in metres
+and projected per row. The lane WIDTH is not needed: every threshold is a lateral
+distance, so the tracker runs on a road of unknown width. Camera geometry is
+required; there is no un-calibrated mode.
 
-  This lets us derive, instead of hand-tuning:
-    - association tolerance  ~ a lateral distance to the side (_TOL_X_M)
-    - cross-lane safety cap  ~ the lateral distance association may not cross
-    - noise slope gate       ~ |dy/dx| of a line 16 m to the side
-    - model memory / reset   ~ expressed in metres via z(y)
-
-  Note what is NOT needed: the lane WIDTH. Every threshold above is a lateral
-  distance, and w_real only ever served to convert "a fraction of a lane" into
-  metres. Stating the metres directly is what lets this stage run on a road of
-  unknown width.
-
-  Two further thresholds used to live here and are gone — the ROI corridor
-  (segment mid_x within one lane width of the axis) and the seed x-window's
-  outer bound. Disabling them left the output BIT-IDENTICAL on 288 frames
-  across two datasets and two cameras (CARLA Town03 120, OpenLane Tier A
-  168 / 16 segments), and moved not one of 764 seeds over a further 552
-  frames picked for a DASHED ego-lane marking — the case they were supposed
-  to cover. The side test the seed window also carried is kept, inline.
-
-  WHY they were inert matters, because the obvious reason is wrong. It is NOT
-  that innermost-first selection makes an outer bound redundant: the band loop
-  returns at the FIRST band holding any candidate, so a bound that empties a
-  band does change which band the seed comes from. The real reason is that
-  both were written as px_max_at(3.25, y) — against z_min, which carries the
-  ±15° grade slack. In flat-road metres that admits 3.25·z_at/z_min, and the
-  slack starts at 6 m:
-
-      z_at        6 m     8 m    10 m    12 m
-      CARLA      3.25    5.40    8.63   12.93   m of real lateral distance
-      OpenLane     --    4.35    5.99    8.19   (bottom row already sees 6.85 m)
-
-  So on a camera mounted as high as OpenLane's the bound was never a 3.25 m
-  barrier anywhere in the image; the next lane's marking (~5 m out) walks
-  through it from about 9.5 m onward.
-
-  The failure it was meant to prevent is real and PREDATES the removal: of
-  those 552 dashed frames, 28 of 512 (5.5%) seed on the adjacent lane and
-  measure a 5-12 m "lane", identically with and without the bound; 23 of the
-  28 already produce no pitch at all. A fix needs a bound derived from the
-  flat-road depth rather than the grade-padded one, and is tracked separately.
-
-  The slope gate, measured the same way, is the opposite case and stays:
-  disabling it costs 2 whole frames and 14.65 m of median range on the
-  OpenLane footage. It looked removable on CARLA (6 frames touched, range
-  slightly BETTER without it) because those three routes have almost no
-  junctions — a gate that rejects stop lines and crosswalks cannot be
-  evaluated on roads that have none.
-
-  z(y) is a flat-ground approximation; on the second plane it drifts, so
-  (y - cy) is clamped and band-count fallbacks are kept as safety nets.
-
-Camera geometry is REQUIRED. A hand-tuned fallback for un-calibrated cameras
-used to live alongside this (min_slope / lane_band_tolerance / roi_near), but
-every caller supplied the full calibration, so it was a second implementation
-that nothing exercised and no test covered. Its thresholds were tuned to one
-dataset in any case, so a genuinely new camera would need them re-derived, not
-reused — which is what the geometry path does automatically.
+Known facts to keep in mind before changing it:
+  - There is no outer bound on seed / ROI x. Such bounds were written against
+    z_min (±15° grade slack), so on a high camera (OpenLane) they never
+    constrained anything; removing them left the output bit-identical. They do
+    NOT prevent adjacent-lane seeding (5.5 % of dashed-lane OpenLane frames seed
+    on the next lane, with or without them); a fix needs a bound derived from
+    the flat-road depth (WWH-21).
+  - The slope gate is load-bearing on urban footage (stop lines, crosswalks):
+    disabling it loses whole frames on OpenLane. CARLA routes have almost no
+    junctions, so it cannot be evaluated there.
+  - z(y) is a flat-ground approximation; on the second plane it drifts, so
+    (y - cy) is clamped and band-count fallbacks are kept as safety nets.
 """
 
-# Geometry constants (metres / fractions with physical meaning)
-# Every threshold below is a LATERAL DISTANCE IN METRES, projected to pixels
-# at each row by geom.px_at / px_max_at. They used to be written as fractions
-# of w_real, which made the tracker look like it needed to know the lane width
-# -- it does not: what it needs is how far to the side to look, and that is a
-# property of driving, not of this road's markings. Measured over three routes
-# (254 frames, assumed width swept 2.60-4.40 m): >=95% of frames produce
-# BIT-IDENTICAL lane curves and the lateral positions never move at all, so a
-# fixed distance costs nothing that a per-road width would buy. Values here are
-# the exact equivalents of the old w_real=3.25 forms; see the git history for
-# the re-derivation from road geometry.
+# Every threshold below is a LATERAL DISTANCE IN METRES, projected to pixels at
+# each row by geom.px_at / px_max_at (sweeping an assumed width 2.60-4.40 m left
+# >= 95 % of frames bit-identical, so a fixed distance costs nothing).
 _TOL_X_M             = 0.325  # association tol as a lateral distance
 _TOL_PX_FLOOR        = 3.0    # ELSED endpoint noise floor (px)
-_CROSS_LANE_FRACTION = 0.40   # association may not search beyond this fraction
-                              # of the MEASURED lane width toward the next lane.
-                              # A ratio, not a distance: the width it scales is
-                              # measured per frame (_measure_lane_width_m), so
-                              # nothing here assumes how wide this road is.
+_CROSS_LANE_FRACTION = 0.40   # association may not search beyond this fraction of
+                              # the lane width measured this frame (_measure_lane_width_m)
 _SLOPE_GATE_X_M      = 3.25   # noise slope gate: |dy/dx| of a line this far aside.
-                              # This is the one lateral scale that CANNOT be
-                              # measured instead of assumed: it runs in
-                              # _segment_info, before any line has been found.
-                              # Load-bearing — disabling it on urban footage
-                              # loses whole frames (see the module docstring).
+                              # The one lateral scale that cannot be measured: it runs
+                              # before any line has been found. Load-bearing (see above).
 _SEED_X_MAX          = 8.0    # seed slope gate: lines beyond 8 m lateral are noise
 _NOISE_X_MAX         = 16.0   # prefilter slope gate: beyond 16 m lateral
 _MODEL_MEMORY_M      = 4.0    # local model fits points within 4 m of depth
@@ -109,10 +50,7 @@ _SUPPORT_MIN_LEN_PX  = 60.0   # lone seed-only re-seeded segments shorter than t
                               # are isolated blobs (poles/hillside: 32-54 px;
                               # legit single-seg far sections: >= 77 px)
 
-# Camera model (z_at / z_min / lane_px bounds, grade-uncertainty constants)
-# lives in geometry.py — paint_evidence uses the same bounds. `_Geometry` is
-# the historical local name, kept so existing call sites and debug tooling
-# stay valid.
+# Camera model (z_at / z_min / lane_px bounds) lives in geometry.py, shared with paint_evidence.
 from libs.inference.geometry import CameraGeometry as _Geometry
 
 
@@ -205,12 +143,9 @@ def _find_seed(infos, selected, is_left, center_x,
             return False
         if abs(s) < seed_slope_gate:
             return False
-        # NOTE on a tempting-but-rejected idea: gating re-seeds by direction
-        # consistency with the dying track (to block kerb / stop lines at
-        # intersections, e.g. frame 448) was tried with both additive and
-        # ratio tolerances — any setting tight enough to block the junk also
-        # rejected legitimate re-seeds at crest plane changes (60+ frames
-        # regressed). Re-seed direction alone does not separate the two.
+        # Do not gate re-seeds by direction consistency with the dying track:
+        # any tolerance tight enough to block kerbs / stop lines also rejects
+        # legitimate re-seeds at crest plane changes (tried, 60+ frames regressed).
         return True
 
     for i in range(search_from_band, -1, -1):
@@ -224,11 +159,8 @@ def _find_seed(infos, selected, is_left, center_x,
         if not geom.z_valid(y_c):
             continue
 
-        # The seed must lie on this side of the camera axis, and that is the
-        # WHOLE constraint. An outer bound at one lane width used to sit here
-        # as well; removing it moved not one of 764 seeds over 552 dashed-lane
-        # OpenLane frames, for a non-obvious reason — see the module docstring,
-        # and do NOT re-add it expecting it to stop adjacent-lane seeding.
+        # The seed must lie on this side of the camera axis — the whole
+        # constraint (no outer bound; see the module docstring before adding one).
         group_tol = max(_TOL_PX_FLOOR, geom.px_max_at(_TOL_X_M, y_c))
 
         cands = []
@@ -244,7 +176,7 @@ def _find_seed(infos, selected, is_left, center_x,
                 continue
             cands.append((x_c, info))
         if cands:
-            # innermost + tolerance, same spirit as the old per-band rule
+            # innermost + tolerance
             if is_left:
                 best = max(c[0] for c in cands)
                 picked = [inf for x, inf in cands if x >= best - group_tol]

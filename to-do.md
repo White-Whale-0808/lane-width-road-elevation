@@ -87,8 +87,8 @@ repo 內論文背書（`Lin_&_Tsai_IEEETPAMI_1991.pdf`、`AI-Enhanced_Mono-View_
 - [ ] 待辦：對「有依據」的項目，在註解補上明確 ref（規範名稱 / repo 論文路徑）
 
 ### 2. `docs/diagrams/` 沒有進版控
-（原本的「修失效的文件參照」已完成：docstring 改指向版控裡真的有的
-`docs/papers/lane_segmentation_design_logic.drawio`。）
+（2026-10-01 決定：**等整個流程確定後再重畫流程圖**，到時一併決定放哪裡。在那之前
+`docs/papers/*.drawio` 四份的本機刪除不 commit，repo 裡保留舊圖。程式註解已不再指向任何 drawio。）
 
 `docs/diagrams/` 底下有四份流程圖（`lane_segmentation_flow`、`lane_fitting_flow`、
 `pitch_estimation_flow`、`workflow`，2026-07-17），**未追蹤也沒被 gitignore**。
@@ -205,10 +205,10 @@ MAE 全掃判。
       + `libs/dataset/` 是舊 Resnet101 訓練路徑，已不在任何推論流程上
       → 決定留作歷史還是清掉（README 目前只用一行帶過）
 
-### B2. windowed pitch 的 95 ms 延遲（隨 CARLA 一起解凍）
+### B2. windowed pitch 的延遲（即時化前要處理）
 - [ ] `estimate_pitch_windowed` 每幀呼叫 200 次 `theilslopes`，pitch 階段
-      從 5 ms 變 ~95–135 ms。批次無所謂，**CARLA 即時前必須處理**。
-      `carla_module/` 整個 DEFERRED（WWH-10），所以這項也一起壓著
+      從 5 ms 變 ~95–135 ms（ELSED pipeline）；CLRNet 前端 2026-09-28 在 GTX 1650
+      實測 14 ms／幀。批次無所謂，要即時化時再處理（CARLA 即時測試已於 2026-09-29 刪除）
 
 ### G. profile 圖依 z 切成固定跨距（原型已備，等決策）
 - [ ] 不同幀的 z 範圍差很多（2.5–10 m vs 9.5–45 m），同樣 8 inch 寬的圖
@@ -446,10 +446,5 @@ road 43 就是 z 尺度 **−8%**。
 
 ## 注意
 
-- `carla_module/` 的推論路徑仍 **DEFERRED**（WWH-10）：`realtime_test.py` /
-  `carla_visualization.py` 都 import 了已刪除的函式。動 CARLA 時要一起遷移到
-  `lane_curve` / `sample_widths_from_curves` / `estimate_pitch_from_curves`，
-  並補上 WWH-15 的三道閘門
-- `realtime_test.py` 也讀 `w_real`，遷移時記得語意是**內側邊到內側邊**
 - 基準備份：`debug/outputs/pre_w325_baseline/`（舊資料集 + 回推 GT + 3.216，
   0.2331）與 `debug/outputs/pre_calibration_baseline/`（更早）

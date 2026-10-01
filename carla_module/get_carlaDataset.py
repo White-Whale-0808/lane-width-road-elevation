@@ -8,6 +8,8 @@ CARLA 資料集蒐集腳本：蒐集 RGB 影像與 GT pitch／速度／行駛距
         [--align-frames N] [--warmup-frames N] [--lookahead-m N]
         [--route-length-m N] [--route-dest X,Y[,Z]]
         [--kp F] [--ki F] [--kd F] [--ff-gain F]
+        [--camera-preset {default,openlane}] [--cam-z M] [--cam-fov DEG]
+        [--img-width PX] [--img-height PX]
 
 狀態機流程：
     生成車輛
@@ -87,6 +89,20 @@ CAMERA_FOV    = 90.0
 CAMERA_HEIGHT = 1.08   # 相對「車輛原點」的掛載高度，車輛原點不一定在地面
 CAMERA_FWD_X  = 1.5    # 相機前移量：GT 距離記在車輛原點，推論端需用此值對齊
 PHYSICS_WARMUP_TICKS = 30   # 生成後讓物理系統落穩的預熱 tick 數
+
+# --camera-preset：整組換掉相機規格（WWH-25）。
+#   openlane  仿 OpenLane（Waymo 前鏡頭）：1920×1280、焦距 2071.4 px（202 段中位數，
+#             見 openlane_module/convert_openlane._F_SRC_MEDIAN）→ 水平 FOV
+#             2·atan(960/2071.4) = 49.73°；離地 2.116 m（OpenLane 轉換後的
+#             camera_height）。CARLA 是方像素，f_x = f_y，與 OpenLane 一致。
+#             縮到 pipeline 的 1024×512 後 f_x=1104.75、f_y=828.56，和 OpenLane
+#             的虛擬內參完全相同 —— 兩份資料集可以共用同一組相機參數。
+#   ⚠ project_lane_gt.py / verify_carla_geometry.py 直接 import 下面的常數，
+#   不會跟著換；它們讀舊資料集沒問題，要用在新資料集得改成讀 metadata.json。
+CAMERA_PRESETS = {
+    "default":  dict(IMG_WIDTH=1280, IMG_HEIGHT=720, CAMERA_FOV=90.0, CAMERA_HEIGHT=1.08),
+    "openlane": dict(IMG_WIDTH=1920, IMG_HEIGHT=1280, CAMERA_FOV=49.73, CAMERA_HEIGHT=2.116),
+}
 
 
 # ── 狀態機 ────────────────────────────────────────────────────────────────────
@@ -689,7 +705,28 @@ def parse_args() -> argparse.Namespace:
                    help="PID 微分增益（預設 0.15）")
     p.add_argument("--ff-gain", type=float, default=0.015,
                    help="坡度前饋增益（預設 0.015）")
+    p.add_argument("--camera-preset", choices=sorted(CAMERA_PRESETS), default="default",
+                   help="相機規格組（預設 default＝1280×720、FOV 90°、1.08 m；"
+                        "openlane＝仿 OpenLane 前鏡頭，見 CAMERA_PRESETS）")
+    p.add_argument("--cam-z",      type=float, default=None, help="覆寫相機離車輛原點高度（m）")
+    p.add_argument("--cam-fov",    type=float, default=None, help="覆寫水平 FOV（度）")
+    p.add_argument("--img-width",  type=int,   default=None, help="覆寫影像寬（px）")
+    p.add_argument("--img-height", type=int,   default=None, help="覆寫影像高（px）")
     return p.parse_args()
+
+
+def apply_camera_args(args) -> None:
+    """把 --camera-preset 與個別覆寫寫進模組常數；main() 之後讀到的都是新值，
+    metadata.json 也照實記下（推論端的 f_x / f_y / camera_height 從那裡推）。"""
+    g = globals()
+    g.update(CAMERA_PRESETS[args.camera_preset])
+    for arg, name in (("cam_z", "CAMERA_HEIGHT"), ("cam_fov", "CAMERA_FOV"),
+                      ("img_width", "IMG_WIDTH"), ("img_height", "IMG_HEIGHT")):
+        if getattr(args, arg) is not None:
+            g[name] = type(g[name])(getattr(args, arg))
+    f = IMG_WIDTH / (2.0 * np.tan(np.radians(CAMERA_FOV) / 2.0))
+    print(f"[相機] {IMG_WIDTH}×{IMG_HEIGHT}  FOV {CAMERA_FOV}°（f = {f:.1f} px）  "
+          f"離車輛原點 {CAMERA_HEIGHT} m  前移 {CAMERA_FWD_X} m  preset={args.camera_preset}")
 
 
 # ── 資料集寫入器 ───────────────────────────────────────────────────────────────
@@ -830,6 +867,7 @@ class DatasetWriter:
 
 def main() -> None:
     args     = parse_args()
+    apply_camera_args(args)
     root_dir = pathlib.Path(__file__).parent.parent
 
     # ── 連線 ──────────────────────────────────────────────────────────────────
@@ -952,6 +990,7 @@ def main() -> None:
             "fov_deg":     CAMERA_FOV,
             "img_width":   IMG_WIDTH,
             "img_height":  IMG_HEIGHT,
+            "preset":      args.camera_preset,
         },
         "road_profile": {
             "max_d_m":     _PROFILE_MAX_D_M,

@@ -53,10 +53,6 @@ def predict_road(model, image_path, device, resize_size):
     pred_mask = (pred == ROAD_CLASS).astype(np.uint8)
     return resized_image, pred_mask
 
-# The earlier Resnet101 variant of predict_road (sigmoid + `threshold`) was
-# dropped: too slow and not accurate enough. That is also why `threshold` and
-# `mask_erosion_kernel` no longer appear in the config.
-
 def apply_road_mask(resized_image, pred_mask):
     image = np.array(resized_image)
     road_mask_255 = (pred_mask * 255).astype(np.uint8)

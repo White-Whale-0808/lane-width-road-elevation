@@ -1,12 +1,8 @@
 import numpy as np
 
 """
-Shared flat-ground pinhole projection model.
-
-Extracted from lane_segmentation (which derives its tracking thresholds from
-it) once paint_evidence needed the same z_min-bounded probe windows — the
-camera model is stage-neutral, so it lives here instead of one stage
-importing another's internals.
+Shared flat-ground pinhole projection model, used by lane_segmentation
+(tracking thresholds) and paint_evidence / model_lane_fitting (probe windows).
 """
 
 # Grade-uncertainty constants (used by z_min / lane_px_max bounds)
@@ -24,7 +20,7 @@ class CameraGeometry:
     so z_min(y) (taken at +θ_max, uphill) lower-bounds the true depth, and is
     also finite for rows ABOVE the flat horizon — exactly where uphill road
     appears. Pixel windows derived with z_min are valid for any grade within
-    the bound; that is the principled replacement for hand-tuned margins.
+    the bound.
     """
 
     def __init__(self, f_x, f_y, camera_height, w_real,
