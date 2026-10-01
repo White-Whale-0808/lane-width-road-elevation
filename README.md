@@ -17,8 +17,7 @@ Monocular road pitch estimation from a single camera. The pipeline runs five seq
   - [1. Single-Image Inference (with visualization)](#1-single-image-inference-with-visualization)
   - [2. Batch Inference on a Dataset](#2-batch-inference-on-a-dataset)
   - [3. Unit Tests](#3-unit-tests)
-  - [4. CARLA Real-Time Test (currently broken)](#4-carla-real-time-test-currently-broken)
-  - [5. OpenLane as a Second Dataset](#5-openlane-as-a-second-dataset)
+  - [4. OpenLane as a Second Dataset](#4-openlane-as-a-second-dataset)
 - [Ground Truth](#ground-truth)
 - [Configuration Reference](#configuration-reference)
 - [Critical Conventions](#critical-conventions)
@@ -116,10 +115,7 @@ mono3D-two-plane-geo/
 │   ├── get_carlaDataset.py                     # Dataset collector (images + measurements + road profile)
 │   ├── pick_route.py                           # Top-down route picking tool
 │   ├── project_lane_gt.py                      # Project lane GT into the image
-│   ├── verify_carla_geometry.py                # Calibration checks against the simulator
-│   ├── realtime_test.py                        # Real-time inference loop — CURRENTLY BROKEN, see below
-│   ├── carla_road_segmentation.py              # PIDNet adapter for PIL input
-│   └── carla_visualization.py                  # CARLA display rendering
+│   └── verify_carla_geometry.py                # Calibration checks against the simulator
 ├── utils/
 │   ├── env_setup.py                            # Must be called before any C extension import
 │   ├── inference_road_lane_segmentation.py     # Single-image inference + all visualizations
@@ -214,7 +210,7 @@ pidnet_pretrained_model/PIDNet_L_Cityscapes_test.pt
 
 **Step 5 — (Optional) Install the CARLA Python package**
 
-Only needed for data collection or real-time testing. Install the `.whl` that matches your CARLA server version:
+Only needed for data collection. Install the `.whl` that matches your CARLA server version:
 
 ```bash
 uv pip install $CARLA_WHL_PATH
@@ -329,19 +325,7 @@ They do **not** measure accuracy. That is what the batch MAE sweep is for.
 
 ---
 
-### 4. CARLA Real-Time Test (currently broken)
-
-```bash
-python carla_module/realtime_test.py [--host HOST] [--port PORT] [--map MAP] [--timeout SEC]
-```
-
-> ⚠ **This path does not currently run.** `realtime_test.py` and `carla_visualization.py` still import `collect_points_from_segments`, `piecewise_linear_fit`, `compute_lane_widths` and `fit_two_plane_model`, all of which were removed in WWH-7 / WWH-9. Reviving it means migrating to `lane_curve` / `sample_widths_from_curves` / `estimate_pitch_from_curves` and adding the three evidence guards. Two further notes for whoever does it: `realtime_test.py` mounts its camera at 2.4 m and overrides `camera_height`, and it overrides `f_y = f_x` because the CARLA camera has square pixels; and its `w_real` means inner-edge to inner-edge, same as everywhere else.
-
-Data **collection** from CARLA (`carla_module/get_carlaDataset.py`, `pick_route.py`) is unaffected and works.
-
----
-
-### 5. OpenLane as a Second Dataset
+### 4. OpenLane as a Second Dataset
 
 Every threshold in this pipeline was originally fitted on three CARLA routes through one Town03 map. `openlane_module/` converts [OpenLane](https://github.com/OpenDriveLab/OpenLane) (3D lane annotations over the Waymo Open Dataset) into the same three-file dataset format, so a gate can be tested on roads with junctions, real paint and a different camera mount. **The pipeline and the GT module are unchanged** — every compatibility problem is solved inside the converter.
 
@@ -460,5 +444,4 @@ It used to be an opt-in flag, off by default, because the width gets measurably 
 - **Coordinate system**: OpenCV convention — origin at top-left, y increases downward. Left lane lines have **negative** slope, right lane lines have **positive** slope.
 - **`resize_size` is `[height, width]`** in the YAML, but PIL's `image.resize()` expects `(width, height)`. The swap is handled inside `predict_road()` — do not swap it again.
 - **`w_real` is inner-edge to inner-edge**, not CARLA's `waypoint.lane_width` (which is boundary-centre to boundary-centre).
-- **CARLA overrides `f_y = f_x`** (square pixels) and `camera_height = 2.4` inside `carla_module/realtime_test.py::load_config()`. The YAML values are ignored in that mode.
 - **`pipeline.py` has a second copy**: `utils/inference_road_lane_segmentation.py` inlines the same stages to draw intermediates. Changes to the pipeline must be made in both.
