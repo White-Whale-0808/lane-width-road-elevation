@@ -181,6 +181,7 @@ def infer_one_clrnet(
     # share of the reported pitch output's width samples that are paint on both
     # sides: only rows within the (possibly trimmed) output depth, None without output
     width_paint_frac = None
+    w_rows = np.empty(0)
     widths = np.asarray(pitch_curve["widths"])
     if pitch_curve["pitch_at"] is not None and widths.ndim == 2 and len(widths):
         z = f_x * w_real_metric / widths[:, 1]
