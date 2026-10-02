@@ -361,6 +361,96 @@ def refine_center(image_rgb, rows, x_prior, f_x, f_y, camera_height):
     return x_out, paint
 
 
+# smooth_refine: the paint-measured offset is smoothed along the line over
+# ±max(_SMOOTH_HALF_MIN_M, _SMOOTH_HALF_FRAC·z) of depth — wide enough that a
+# window always holds part of a dash (CARLA dashes ~3 m, gaps ~6 m), narrow
+# enough to follow how the detector error grows towards a curve.
+_SMOOTH_HALF_MIN_M = 3.0
+_SMOOTH_HALF_FRAC = 0.2
+_SMOOTH_MIN_PAINT = 10        # fewer usable paint rows on a line: leave it unrefined
+# Occlusion guards. On real streets the paint test also fires on parked-car
+# bodies, kerbs and lamps next to the line (OpenLane: snaps 0.45-1.3 m off, the
+# unguarded version doubled the near Z-error):
+#   offset cap  — the detector's own error stays within ~0.3 m (CARLA, worst on
+#                 curves at 35-45 m); a larger snap is not this line's paint
+#   coherence   — real paint snaps lie on one smooth curve: residual MAD about a
+#                 local line ≤ _SMOOTH_MAX_MAD_PX; scattered snaps are rejected
+#   density     — ≥ _SMOOTH_MIN_DENSITY of the window's rows must be paint, so a
+#                 long occluded stretch is left alone
+#   no carry    — beyond the last trusted window the offset tapers to 0 over
+#                 half a window instead of being held to the far end
+_SMOOTH_MAX_OFF_M = 0.30
+_SMOOTH_MAX_MAD_PX = 1.5
+_SMOOTH_MIN_DENSITY = 0.2
+_SMOOTH_MIN_KEEP = 0.7        # share of a window's snaps that must survive the trim
+
+
+def _local_fit(z, o, zc):
+    """Offset at zc from a line through (z, o) after one 3-MAD trim:
+    (value, residual MAD, kept share), or None when degenerate."""
+    if len(z) < 3 or np.ptp(z) < 1e-6:
+        return None
+    a, c = np.polyfit(z, o, 1)
+    r = o - (a * z + c)
+    mad = 1.4826 * np.median(np.abs(r - np.median(r)))
+    keep = np.abs(r) <= max(3.0 * mad, 1e-9)
+    if keep.sum() < 3 or np.ptp(z[keep]) < 1e-6:
+        return None
+    a, c = np.polyfit(z[keep], o[keep], 1)
+    r = o[keep] - (a * z[keep] + c)
+    return a * zc + c, 1.4826 * np.median(np.abs(r - np.median(r))), keep.mean()
+
+
+def smooth_refine(rows, x_prior, x_snap, is_paint, f_x, f_y, camera_height, image_height):
+    """Detector positions shifted by the paint-measured offset, smoothed along the line.
+
+    The offset (snapped − detector) is measured on paint rows only, converted to
+    metres at the row's flat-ground depth (a steady lateral error is steady in
+    metres, not pixels). Each row takes a local straight-line fit of the offset
+    over the paint rows in its window (see the constants), so a gradually growing
+    error — a curve ahead — is followed. Every row moves by a smoothly varying
+    amount: the reference no longer jumps at each dash end (what made per-row
+    snapping worse), and the rows in the gaps are corrected too. The occlusion
+    guards (constants above) decide which windows are trusted; untrusted rows
+    between trusted ones are interpolated, beyond them the offset tapers to 0.
+
+    Returns x (float array); x_prior unchanged when nothing is trusted.
+    """
+    rows = np.asarray(rows, dtype=np.float64)
+    x_prior = np.asarray(x_prior, dtype=np.float64)
+    z = f_y * camera_height / np.maximum(rows - image_height / 2.0, 1.0)
+    off_m = (np.asarray(x_snap, dtype=np.float64) - x_prior) * z / f_x
+    paint = np.asarray(is_paint, dtype=bool) & (np.abs(off_m) <= _SMOOTH_MAX_OFF_M)
+    if paint.sum() < _SMOOTH_MIN_PAINT:
+        return x_prior.copy()
+    half = np.maximum(_SMOOTH_HALF_MIN_M, _SMOOTH_HALF_FRAC * z)
+    sm = np.full(len(rows), np.nan)
+    for i in range(len(rows)):
+        win = np.abs(z - z[i]) <= half[i]
+        k = win & paint
+        if k.sum() < 3 or k.sum() < _SMOOTH_MIN_DENSITY * win.sum():
+            continue
+        fit = _local_fit(z[k], off_m[k], z[i])
+        if fit is None:
+            continue
+        val, mad_m, kept = fit
+        if kept >= _SMOOTH_MIN_KEEP and mad_m * f_x / z[i] <= _SMOOTH_MAX_MAD_PX and abs(val) <= _SMOOTH_MAX_OFF_M:
+            sm[i] = val
+    have = np.flatnonzero(np.isfinite(sm))
+    if len(have) < _SMOOTH_MIN_PAINT:
+        return x_prior.copy()
+    idx = np.arange(len(rows))
+    lo, hi = have[0], have[-1]
+    out = np.zeros(len(rows))
+    inner = (idx >= lo) & (idx <= hi)
+    out[inner] = np.interp(idx[inner], have, sm[have])
+    for j in idx[idx < lo]:
+        out[j] = sm[lo] * max(0.0, 1.0 - abs(z[j] - z[lo]) / half[lo])
+    for j in idx[idx > hi]:
+        out[j] = sm[hi] * max(0.0, 1.0 - abs(z[j] - z[hi]) / half[hi])
+    return x_prior + out * f_x / z
+
+
 def apply_tail(rows, x, is_paint, tail):
     """`keep`: every row. `last_paint`: drop rows farther (smaller y) than the
     farthest paint row — the detector draws lines smoothly over a crest, and

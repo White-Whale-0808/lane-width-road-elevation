@@ -27,6 +27,7 @@ Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
                           paint on BOTH sides
     nearfield_paint_frac  same, over the near-field window rows
+    refined               True when the ego lines were snapped to paint (refine)
 """
 
 import numpy as np
@@ -35,7 +36,7 @@ from PIL import Image
 from libs.inference.lane_fitting import truncate_at_depth_jump
 from libs.inference.model_lane_fitting import (apply_tail, densify, trim_pitch_to_depth,
                                                guard_ego, model_curve, pick_ego,
-                                               refine_center, src_at)
+                                               refine_center, smooth_refine, src_at)
 from libs.inference.pitch_estimation import (NearfieldWidthCalibrator,
                                              _empty_result,
                                              estimate_pitch_from_curves,
@@ -49,16 +50,49 @@ def load_resized(image_path, resize_size):
     return image.resize((resize_size[1], resize_size[0]), Image.BILINEAR)
 
 
-def _side(image, lane, f_x, f_y, camera_height, tail, refine):
-    """(points (N, 2) of (x, y), is_paint (N,)) for one ego line."""
+# refine="solid": snap only when BOTH ego lines are continuous paint over their
+# whole drawn length — solid and unoccluded. Then every row has paint, so the
+# reference point never jumps between the snapped and the detector centre (what
+# made "center" worse on dashed lines). Measured on the CARLA OpenLane-camera
+# routes (current settings): solid Town03 lines 0.94-1.00 paint rows, longest
+# paint-free run 2-4 rows; dashed Town05 0.30-0.38 and ~77 rows.
+SOLID_MIN_PAINT_FRAC = 0.9
+SOLID_MAX_GAP_ROWS = 10
+
+
+def _is_solid(paint):
+    """True when the line is paint on >= SOLID_MIN_PAINT_FRAC of its rows and
+    no paint-free run is longer than SOLID_MAX_GAP_ROWS."""
+    if len(paint) == 0 or paint.mean() < SOLID_MIN_PAINT_FRAC:
+        return False
+    gap = run = 0
+    for p in paint:
+        run = 0 if p else run + 1
+        gap = max(gap, run)
+    return gap <= SOLID_MAX_GAP_ROWS
+
+
+def _side(image, lane, f_x, f_y, camera_height):
+    """(rows, detector x, paint-snapped x, is_paint) for one ego line; None without one."""
     if lane is None:
-        return np.empty((0, 2)), np.empty(0, dtype=bool)
+        return None
     rows, x_prior = densify(lane)
-    x, paint = refine_center(image, rows, x_prior, f_x, f_y, camera_height)
-    if refine == "none":          # keep the detector's positions, flags only
+    x_snap, paint = refine_center(image, rows, x_prior, f_x, f_y, camera_height)
+    return rows, x_prior, x_snap, paint
+
+
+def _points(side, how, tail, f_x=None, f_y=None, camera_height=None, image_height=None):
+    """(points (N, 2) of (x, y), is_paint (N,)) with the chosen x and the tail rule.
+    how: "prior" (detector), "snap" (paint centre per row) or "smooth" (smooth_refine)."""
+    if side is None:
+        return np.empty((0, 2)), np.empty(0, dtype=bool)
+    rows, x_prior, x_snap, paint = side
+    if how == "snap":
+        x = x_snap
+    elif how == "smooth":
+        x = smooth_refine(rows, x_prior, x_snap, paint, f_x, f_y, camera_height, image_height)
+    else:
         x = x_prior
-    elif refine != "center":
-        raise ValueError(f"refine must be 'center' or 'none', got {refine!r}")
     rows, x, paint = apply_tail(rows, x, paint, tail)
     return np.column_stack([x, rows]), paint
 
@@ -122,10 +156,13 @@ def infer_one_clrnet(
         "keep" or "last_paint" — see model_lane_fitting.apply_tail.
     refine
         "none" (default: detector positions everywhere; the paint flags are
-        still computed) or "center" (snap paint rows to the stripe centre).
-        Snapping makes pitch WORSE at every depth (Town05 5-10 m 0.262° vs
-        0.133°): the reference point jumps between the snapped and the detector
-        centre at every dash end.
+        still computed), "center" (snap paint rows to the stripe centre) or
+        "solid" (snap only when both ego lines are solid and unoccluded, see
+        SOLID_*; otherwise as "none") or "smooth" (every row shifted by the
+        paint-measured offset smoothed along the line, model_lane_fitting.
+        smooth_refine — dashed lines too). "center" makes pitch WORSE at every depth
+        (Town05 5-10 m 0.262° vs 0.133°): the reference point jumps between the
+        snapped and the detector centre at every dash end.
     nearfield_source
         "paint" (default: the calibrator sees only paint rows, bridged between
         paint rows as lane_curve would; no paint in the window ⇒ not measured
@@ -158,8 +195,16 @@ def infer_one_clrnet(
     if ego_guard:
         left, right, guard = guard_ego(lanes, left, right, f_x, f_y, camera_height, W, H)
 
-    lp, lsrc = _side(image, left, f_x, f_y, camera_height, tail, refine)
-    rp, rsrc = _side(image, right, f_x, f_y, camera_height, tail, refine)
+    if refine not in ("none", "center", "solid", "smooth"):
+        raise ValueError(f"refine must be 'none', 'center', 'solid' or 'smooth', got {refine!r}")
+    sl = _side(image, left, f_x, f_y, camera_height)
+    sr = _side(image, right, f_x, f_y, camera_height)
+    snapped = refine == "center" or (refine == "solid" and sl is not None and sr is not None
+                                     and _is_solid(sl[3]) and _is_solid(sr[3]))
+    how = "smooth" if refine == "smooth" else ("snap" if snapped else "prior")
+    lp, lsrc = _points(sl, how, tail, f_x, f_y, camera_height, H)
+    rp, rsrc = _points(sr, how, tail, f_x, f_y, camera_height, H)
+    snapped = snapped or refine == "smooth"
     lp2, rp2 = truncate_at_depth_jump(lp, rp, f_x, H)
     lsrc, rsrc = _keep_src(lp, lsrc, lp2), _keep_src(rp, rsrc, rp2)
     left_curve = model_curve(lp2[:, 1], lp2[:, 0], lsrc) if len(lp2) else None
@@ -208,7 +253,7 @@ def infer_one_clrnet(
               "w_real_hold_frames": hold_frames, "w_real_hold_m": hold_m,
               "width_paint_frac": width_paint_frac,
               "nearfield_paint_frac": nearfield_paint_frac,
-              "ego_guard": guard}
+              "ego_guard": guard, "refined": bool(snapped)}
     if return_debug:
         degenerate = pitch_curve["pitch_at"] is None or len(pitch_curve["z_samples"]) == 0
         result["debug"] = {
