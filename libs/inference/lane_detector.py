@@ -174,9 +174,9 @@ class CLRNet:
 
     @torch.no_grad()
     def __call__(self, img_rgb, f_x, f_y, cut, mode='culane'):
-        """img_rgb: H×W×3 uint8。回傳 (lanes, conf)：lanes 是 [ (N,2) ndarray (x, y)
-        原圖像素 ]，conf 是每條線的前景 logit（CLRNet Lane.metadata['conf']，
-        未經 softmax；只用來排序／比較，門檻是建構時的 conf）。"""
+        """img_rgb: H×W×3 uint8。回傳 (lanes, score)：lanes 是 [ (N,2) ndarray (x, y)
+        原圖像素 ]，score 是每條線的前景機率（CLRNet 對兩個類別 logit 取 softmax，
+        跟建構時的 conf 門檻同一個尺度）。"""
         H, W = img_rgb.shape[:2]
         crop = cv2.cvtColor(img_rgb[cut:], cv2.COLOR_RGB2BGR).astype(np.float32)
         sy = self.img_h / (H - cut)
@@ -200,6 +200,9 @@ class CLRNet:
         self.cfg.ori_img_h, self.cfg.cut_height, self.cfg.ori_img_w = self.img_h, 0, self.img_w
         out = self.net(t)
         lanes = self.net.heads.get_lanes(out)[0]
+        # Lane.metadata['conf'] 只帶前景 logit；用它找回網路輸出的那一列，算 softmax 機率
+        pred = out[0]
+        prob = torch.softmax(pred[:, :2], dim=1)[:, 1]
         res, conf = [], []
         for ln in lanes:
             p = np.asarray(ln.points, dtype=np.float64)       # 正規化到 800×320
@@ -209,5 +212,6 @@ class CLRNet:
             if ok.sum() >= 2:
                 o = np.argsort(y[ok])
                 res.append(np.stack([x[ok][o], y[ok][o]], 1))
-                conf.append(float(ln.metadata['conf']))
+                row = torch.nonzero(pred[:, 1] == ln.metadata['conf'])[0, 0]
+                conf.append(float(prob[row]))
         return res, conf

@@ -145,7 +145,7 @@ def infer_one_clrnet(
     rgb = np.asarray(image)
     H, W = rgb.shape[:2]
 
-    lanes, conf = detector(rgb, f_x, f_y, cut=int(round(cut_frac * H)), mode=detector_mode)
+    lanes, score = detector(rgb, f_x, f_y, cut=int(round(cut_frac * H)), mode=detector_mode)
     left, right, y_pick_l, y_pick_r = pick_ego(lanes, W)
     guard = "off"
     if ego_guard:
@@ -169,6 +169,7 @@ def infer_one_clrnet(
         raise ValueError(f"nearfield_source must be 'all' or 'paint', got {nearfield_source!r}")
     w_real_metric, status = resolve_lane_width(
         cal, cal_l, cal_r, last_resort_lane_width)
+    reason, hold_frames, hold_m = cal.reason, cal.hold_frames, cal.hold_m
     if w_real_metric is None:
         pitch_curve = {**_empty_result(), "widths": np.empty((0, 2))}
     else:
@@ -196,8 +197,8 @@ def infer_one_clrnet(
                             if len(nf) else None)
 
     result = {"pitch_curve": pitch_curve, "w_real_used": w_real_metric,
-              "w_real_status": status, "w_real_reason": cal.reason,
-              "w_real_hold_frames": cal.hold_frames, "w_real_hold_m": cal.hold_m,
+              "w_real_status": status, "w_real_reason": reason,
+              "w_real_hold_frames": hold_frames, "w_real_hold_m": hold_m,
               "width_paint_frac": width_paint_frac,
               "nearfield_paint_frac": nearfield_paint_frac,
               "ego_guard": guard}
@@ -205,7 +206,7 @@ def infer_one_clrnet(
         degenerate = pitch_curve["pitch_at"] is None or len(pitch_curve["z_samples"]) == 0
         result["debug"] = {
             "n_lanes": len(lanes),
-            "lane_conf": conf,
+            "lane_score": score,
             "lanes": lanes,
             "y_pick": (y_pick_l, y_pick_r),
             "n_width_samples": int(len(w_rows)),
