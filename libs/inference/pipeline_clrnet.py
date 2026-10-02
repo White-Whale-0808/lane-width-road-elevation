@@ -137,6 +137,13 @@ def infer_one_clrnet(
         No pitch output beyond this depth (m); the estimate is made on the full
         curves and only its output is trimmed (trim_pitch_to_depth). None: no
         limit. The config sets it from the measured flattening of the weights.
+    ⚠ Tried and rejected (WWH-28): a trust threshold — lines scoring below it
+    used only their own frame's width, never a held one. Its gain on OpenLane
+    up&down (near Z-error −0.6 cm for −10 points of output) was one segment
+    (133368: 97 of the 135 frames it dropped), whose real fault is a held width
+    6 % low that the high-score frames there share; on two held-out sets it
+    moved ±0.1 cm and on CARLA it was no better. The fault to fix is a held
+    width nothing can check (to-do), not the score of the line.
 
     Everything else as pipeline.infer_one, and the same result keys, plus
     width_paint_frac / nearfield_paint_frac (module docstring).

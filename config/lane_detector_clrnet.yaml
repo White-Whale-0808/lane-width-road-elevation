@@ -5,7 +5,7 @@ clrnet:
   # CLRNet source + culane_dla34.pth live outside the repo: $CLRNET_ROOT, default
   # D:/models/clrnet (libs/inference/lane_detector.py). Load everything below with
   # lane_detector.CLRNet.from_config.
-  conf_threshold: 0.4   # CLRNet's CULane test setting
+  conf_threshold: 0.4   # CLRNet's CULane test setting (detection: lines scoring below are dropped)
   # Preprocessing must match how the weights were trained. The values below are for
   # the released CULane weights (top 270/590 rows cropped; uncropped input loses lines).
   cut_frac: 0.457627    # 270 / 590
@@ -15,8 +15,11 @@ clrnet:
   # weights: null       # null: $CLRNET_WEIGHTS or $CLRNET_ROOT/culane_dla34.pth
   #
   # OpenLane fine-tune (geometry B, currently chosen: D:/models/clrnet/ft_full/ft_B_full_ep10.pth):
-  #   weights: <path>, cut_frac: 0.0, mode: naive, img_w: 800, img_h: 320
-  # and re-measure fitting.max_depth_m for it.
+  #   weights: <path>, cut_frac: 0.0, mode: naive, img_w: 800, img_h: 320,
+  #   conf_threshold: 0.3
+  # and re-measure fitting.max_depth_m for it. 0.4 drops correct lines with it: ego pair
+  # both correct 62.9 -> 77.8 % at 0.3, wrong picks 2.6 -> 2.4 % (WWH-28). A trust
+  # threshold for low-score lines was tried and rejected (pipeline_clrnet.infer_one_clrnet).
 
 fitting:
   tail: keep              # Rows past the last paint row: "keep" (detector position, src=model) or "last_paint" (drop)
