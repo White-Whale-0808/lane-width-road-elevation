@@ -13,7 +13,7 @@ carla_module/project_lane_gt.py
           左（雙黃）= 1.75 - (0.125 + 0.125/2) = 1.5625
           右（單白）= 1.75 - 0.125/2           = 1.6875
           inner-to-inner = 3.25
-      與 debug/measure_paint_edges.py 直接量到的 3.243~3.255 相符
+      與 debug/carla_gt/measure_paint_edges.py 直接量到的 3.243~3.255 相符
     - 但 config 仍維持 w_real=3.216：A/B 實測 3.245 會讓 batch MAE 由
       0.2331 惡化到 0.2492（退步 388/451 幀）。w_real 只做尺度變換
       （pitch 值不變、只移 z 軸），3.216 目前在補償 GT 距離軸的系統誤差。

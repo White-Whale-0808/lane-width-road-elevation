@@ -1,6 +1,6 @@
 """CLRNet (CVPR 2022, CULane weights) as the lane-detector front end (WWH-25).
 
-Copied from debug/clrnet_infer.py (the step-1 evaluation wrapper, left as is)
+Copied from debug/detector/clrnet_infer.py (the step-1 evaluation wrapper, left as is)
 and extended to return each lane's confidence. The rest of that module's notes
 apply unchanged and are kept below.
 

@@ -216,7 +216,7 @@ MAE 全掃判。
 ### G. profile 圖依 z 切成固定跨距（原型已備，等決策）
 - [ ] 不同幀的 z 範圍差很多（2.5–10 m vs 9.5–45 m），同樣 8 inch 寬的圖
       造成 m/inch 差 5 倍，遠距幀的細節看不見。原型已做在
-      `debug/viz_profile_split.py`（每張固定 5 m，`--yscale shared|tile`，
+      `debug/carla_gt/viz_profile_split.py`（每張固定 5 m，`--yscale shared|tile`，
       建議 tile）。**使用者 2026-07-27 指示先不動畫圖**，待日後決定是否進 libs
 
 ---
@@ -332,8 +332,8 @@ WWH-15 之前的 baseline（供對照）：mean 0.2545 / 0.4633 / 0.2143，>2° 
       `road_profile.csv` 加 `z_mesh_left` / `z_mesh_right`。左右與中心線一樣深
       -> 是渲染 vs 碰撞網格；明顯較淺 -> 是橫向尺度，且可直接算出相機該看到多少。
       要動 CARLA（目前 DEFERRED）
-- 分析腳本 `debug/diag_amplitude_gap.py`、圖 `debug/fig_amplitude_gap.py`
-  （debug/ 不進版控）。⚠ `debug/dump_pitch_curves.py` 原本是 pipeline 第三份
+- 分析腳本 `debug/carla_gt/diag_amplitude_gap.py`、圖 `debug/carla_gt/fig_amplitude_gap.py`
+  （debug/ 不進版控）。⚠ `debug/carla_gt/dump_pitch_curves.py` 原本是 pipeline 第三份
   拷貝、WWH-15 三道閘門沒生效，已改走 `infer_one`
 
 ### 3. 車道寬逐路段變動：已量到（WWH-17），剩下三步後續
@@ -482,6 +482,6 @@ ep10 的分數門檻已改成偵測 0.3（`config/lane_detector_clrnet.yaml` 的
       同段原本就有輸出的幀也一樣錯——問題不在新抓到的線，而在沿用的寬度沒辦法檢查
 - [ ] **重訓時一併處理**：漏抓最常見的是窄街上緊貼停車格、被車擋住的淡白邊線
       （176124、725395、156117、133368）；微調後的分數普遍偏低（同一門檻比 CULane 權重少抓），
-      換權重就要重新掃門檻（`debug/detect_conf_sweep.py`）
+      換權重就要重新掃門檻（`debug/lane_detect/detect_conf_sweep.py`）
 - [ ] 用前幾幀的線補短暫漏抓：連續漏 ≤ 10 幀的只有約 110 幀，收益小，排最後
 
