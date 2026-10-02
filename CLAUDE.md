@@ -44,7 +44,8 @@ Inference config: `config/inference_road_lane_segmentation.yaml` (camera, resize
 front end and the metric stage) and `config/lane_detector_clrnet.yaml` (the CLRNet front end:
 weights + preprocessing + score threshold, which must match each other — the fine-tuned ep10
 weights score low and take detection 0.3 instead of the CULane release's 0.4 (WWH-28; a trust
-threshold for low-score lines was tried and rejected) — fitting options, and its own
+threshold for low-score lines was tried and rejected) — fitting options (`refine: solid` = snap to the paint only when both ego lines are
+solid and unoccluded; `smooth` is opt-in, worse on OpenLane), and its own
 centre-to-centre `last_resort_lane_width`). Runners take the camera from the dataset's
 `metadata.json` when it describes a different camera than the config (`libs/dataset_camera.py`).
 `openlane_module/` converts the OpenLane dataset into this project's format and

@@ -74,6 +74,7 @@ def main():
     ap.add_argument('--img-w', type=int, default=None)
     ap.add_argument('--img-h', type=int, default=None)
     ap.add_argument('--conf', type=float, default=None, help='偵測門檻；省略＝config 的 conf_threshold（給 --weights 時必給）')
+    ap.add_argument('--refine', default=None, choices=['none', 'center', 'solid', 'smooth'], help='線位置精修（pipeline_clrnet refine）；省略＝config 的 fitting.refine')
     ap.add_argument('--max-depth', type=float, default=None, help='pitch 輸出最遠深度；預設不修剪（仍有 z_cap 45 m）')
     ap.add_argument('--limit', type=int, default=0)
     a = ap.parse_args()
@@ -92,8 +93,9 @@ def main():
         det = CLRNet(weights=a.weights, device=mo['device'], conf=cc['conf_threshold'],
                      img_w=a.img_w or cc.get('img_w', 800), img_h=a.img_h or cc.get('img_h', 320))
         cut_frac, mode = a.cut_frac, a.mode
+    refine = a.refine or ccfg['fitting'].get('refine', 'none')
     print(f'detector: weights={a.weights or cc.get("weights") or "(default CULane)"} mode={mode} '
-          f'cut_frac={cut_frac} conf={cc["conf_threshold"]}')
+          f'cut_frac={cut_frac} conf={cc["conf_threshold"]} refine={refine}')
 
     out = a.out_dir / f'pred_{a.tag}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -119,7 +121,7 @@ def main():
                 try:
                     res = infer_one_clrnet(det, str(img), (H, W), lf['num_samples'], f_x, f_y, h,
                                            cut_frac=cut_frac, detector_mode=mode, tail='keep',
-                                           refine='none', nearfield_source='paint', ego_guard=True,
+                                           refine=refine, nearfield_source='paint', ego_guard=True,
                                            max_depth_m=a.max_depth,
                                            samples_per_meter=lf.get('samples_per_meter'),
                                            method=pe.get('method', 'windowed'),
@@ -127,6 +129,7 @@ def main():
                                            last_resort_lane_width=ccfg['fitting']['last_resort_lane_width'],
                                            return_debug=True)
                     rec['status'] = res['w_real_status']
+                    rec['refined'] = res.get('refined', False)
                     rec['lanes'] = lanes_3d(res, f_x, W)
                 except Exception as e:
                     rec['status'] = f'error:{type(e).__name__}:{e}'[:120]

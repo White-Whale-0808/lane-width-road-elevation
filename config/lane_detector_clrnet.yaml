@@ -23,7 +23,13 @@ clrnet:
 
 fitting:
   tail: keep              # Rows past the last paint row: "keep" (detector position, src=model) or "last_paint" (drop)
-  refine: none            # "none" keeps detector positions; "center" snaps paint rows to the stripe centre (measured worse)
+  # Snap the lines to the painted stripe centre? "solid" (default): only when BOTH ego lines are
+  # solid and unoccluded (paint on >= 90 % of rows, no paint-free run > 10 rows) - CARLA solid routes
+  # 30-45 m line error 4.7-7.4 px -> 0.4-0.9 px, OpenLane unchanged (fires on 2 of 5518 frames).
+  # "smooth": paint offset smoothed along the line, dashed lines too, with occlusion guards - better
+  # on CARLA but OpenLane near Z-error +0.8 cm (parked cars, night), so opt-in only.
+  # "none": detector positions. "center": per-row snap, worse (jumps at every dash end).
+  refine: solid
   nearfield_source: paint # Rows the near-field width calibrator uses: "paint" or "all" (paint-only: width p90 0.59 -> 0.23 m)
   ego_guard: true         # Reject an ego pair whose near-field width is outside 2.5-4.5 m (guard_ego)
 
