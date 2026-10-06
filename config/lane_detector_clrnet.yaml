@@ -38,6 +38,16 @@ fitting:
   # which draw far road as flat; re-measure for other weights. null disables.
   max_depth_m: 20
 
-  # Width (m) used before a sequence has measured one. Centre to centre for this
-  # front end: the ELSED pipeline's 3.25 (inner edge to inner edge) + one 0.125 m stripe.
-  last_resort_lane_width: 3.375
+  # Width (m) used before a sequence has measured one (centre to centre: the ELSED
+  # pipeline's 3.25 inner-edge width + one 0.125 m stripe, i.e. 3.375). null: such a
+  # frame outputs no pitch ("no_anchor"). Off since 2026-10-03 (user): its frames were
+  # the worst-scored group everywhere — near Z-error OpenLane 9–42 cm, CARLA 12–15 cm
+  # vs ~3 cm — because real ego lanes run 3.0–5.3 m; a frame whose own near-field
+  # estimate passes the gate still gets a width (pipeline_clrnet "single_frame").
+  last_resort_lane_width: null
+
+  # How a sequence's near-field width estimates are combined (pitch_estimation.width_calibrator):
+  # "kalman" (default since 2026-10-03: averages the whole constant-width stretch, restarts after
+  # 5 contradicting passes so a real width change is followed at once ; detection 0.4, all else
+  # equal: OpenLane up&down near Z-error 4.57 → 4.26 cm) or "median" (median of the last 40 passes, WWH-27).
+  width_filter: kalman

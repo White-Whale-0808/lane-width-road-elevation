@@ -9,9 +9,12 @@ import numpy as np
 import pytest
 
 from libs.inference.lane_fitting import lane_curve
-from libs.inference.pitch_estimation import (NEARFIELD_POOL_K,
+from libs.inference.pitch_estimation import (KALMAN_RESET_N,
+                                             NEARFIELD_POOL_K,
                                              NEARFIELD_POOL_MIN_N,
+                                             KalmanWidthCalibrator,
                                              NearfieldWidthCalibrator,
+                                             width_calibrator,
                                              back_project_widths,
                                              estimate_pitch_from_curves,
                                              estimate_w_real_nearfield,
@@ -272,6 +275,75 @@ def test_last_resort_only_before_the_first_measurement():
     cal.advance_to(50.0)
     w, status = resolve_lane_width(cal, *unreachable, 3.5)
     assert status == "held" and w == pytest.approx(syn.W_REAL, rel=1e-6)
+
+
+def test_single_frame_first_uses_the_own_passing_estimate():
+    """Before the first adoption a frame whose own estimate passes the gate
+    uses it for itself (opt-in) instead of the constant — without adopting it."""
+    cal = NearfieldWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    cal.advance_to(0.0)
+    w, status = resolve_lane_width(cal, *_curves(0.0, 2.0, 30.0), 3.5, single_frame_first=True)
+    assert status == "single_frame" and w == pytest.approx(syn.W_REAL, rel=1e-6)
+    assert cal.status == "no_anchor"                  # one frame: the run is not adopted
+    cal2 = NearfieldWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    cal2.advance_to(0.0)
+    assert resolve_lane_width(cal2, *_curves(0.0, 2.0, 30.0), 3.5) == (3.5, "last_resort")
+
+
+def test_single_frame_first_leaves_a_held_width_alone():
+    """Once the sequence has adopted a width, a failing frame holds it as before."""
+    cal = NearfieldWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    for i in range(4):
+        cal.advance_to(0.7 * i)
+        resolve_lane_width(cal, *_curves(0.0, 2.0, 30.0), 3.5, single_frame_first=True)
+    cal.advance_to(10.0)
+    w, status = resolve_lane_width(cal, *_curves(1.5, 2.0, 30.0), 3.5, single_frame_first=True)
+    assert status == "held" and w == pytest.approx(syn.W_REAL, rel=1e-6)
+
+
+def _kalman_on(w, n):
+    cal = KalmanWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    for i in range(n):
+        _fed_w(cal, 0.7 * i, w)
+    return cal
+
+
+def test_kalman_first_pass_initialises_then_holds():
+    cal = KalmanWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    cal.advance_to(0.0)
+    assert cal.update(*_curves(0.0, 8.0, 30.0)) is None      # nothing in the near window
+    assert cal.status == "no_anchor"
+    assert _fed_w(cal, 0.7, 3.25) == pytest.approx(3.25, rel=1e-6)   # no run to wait for
+    assert (cal.status, cal.n_pooled) == ("measured", 1)
+    cal.advance_to(5.0)
+    assert cal.update(*_curves(1.5, 2.0, 30.0)) == pytest.approx(3.25, rel=1e-6)   # θ0 gate fails
+    assert (cal.status, cal.reason) == ("held", "quality_gate")
+    assert cal.hold_m == pytest.approx(4.3)
+
+
+def test_kalman_ignores_a_single_outlier():
+    """One pass far outside the gate is not used: the width stays put."""
+    cal = _kalman_on(3.25, 10)
+    assert _fed_w(cal, 20.0, 4.0) == pytest.approx(3.25, rel=1e-6)
+    assert (cal.status, cal.reason, cal.n_resets) == ("held", "outlier", 0)
+
+
+def test_kalman_restarts_on_a_real_width_change():
+    """KALMAN_RESET_N contradicting passes in a row mean the width changed:
+    the filter restarts on it (the median of 40 would still hold the old one)."""
+    cal = _kalman_on(3.25, 10)
+    for i in range(KALMAN_RESET_N - 1):
+        assert _fed_w(cal, 20.0 + 0.7 * i, 4.0) == pytest.approx(3.25, rel=1e-6)
+    assert _fed_w(cal, 30.0, 4.0) == pytest.approx(4.0, rel=1e-6)
+    assert (cal.status, cal.n_resets, cal.n_pooled) == ("measured", 1, 1)
+
+
+def test_width_calibrator_picks_the_policy():
+    args = (syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    assert isinstance(width_calibrator("kalman", *args), KalmanWidthCalibrator)
+    assert isinstance(width_calibrator("median", *args), NearfieldWidthCalibrator)
+    with pytest.raises(ValueError):
+        width_calibrator("mean", *args)
 
 
 def test_no_last_resort_means_no_width():

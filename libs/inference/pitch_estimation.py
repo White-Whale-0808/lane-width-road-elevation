@@ -57,10 +57,43 @@ NEARFIELD_RUN_MAX_DROPOUT = 1      # consecutive failed frames a run survives
 # fails where the width really changes (CARLA full_road 3.29 / 3.55 m: 6.5 %).
 NEARFIELD_POOL_K = 40
 NEARFIELD_POOL_MIN_N = 3
+# Kalman alternative (KalmanWidthCalibrator; the detector front end's default since
+# 2026-10-03): the width is a random-walk state, each gate-passing frame a
+# measurement. It averages the whole constant-width stretch instead of the last
+# 40 passes, and it follows a real change at once: KALMAN_RESET_N consecutive
+# passes outside KALMAN_GATE·σ restart it on the new width, where the median needs
+# the new value to fill half its pool (OpenLane: a lane going 2.88 → 4.08 m after a
+# junction held 2.90 m for 10 frames at 64–67 cm height error vs 4–7 cm).
+#   KALMAN_SIGMA_REL  one passing frame's width error, relative (p90 2.7–4.2 %)
+#   KALMAN_Q_M2_PER_M random-walk variance per metre travelled: ~1 % drift per
+#                     100 m. 1e-6 / 1e-5 / 1e-4 replayed on OpenLane up&down: near
+#                     Z-error −0.16 / −0.15 / +0.01 cm against the median of 40;
+#                     1e-5 also best on the held-out 30 segments (−0.15 cm)
+# Replay (debug/width/kalman_replay.py, same curves) against the median of 40:
+# up&down −0.15 cm, held-out −0.15 / −2.15 cm, CARLA width error median 0.68 → 0.55 %
+# (the downhill route 1.13 → 1.40 %: its only loss).
+KALMAN_SIGMA_REL = 0.03
+KALMAN_Q_M2_PER_M = 1e-5
+KALMAN_GATE = 3.0
+KALMAN_RESET_N = 5
 # Hold policy: within one continuous sequence the last adopted value is held
 # however stale, and its age is reported (`hold_m` / `hold_frames`). Before the
 # first adoption there is no value (`status` "no_anchor"); the pipeline then uses
 # the flagged last-resort constant or outputs no pitch. The calibrator knows no constant.
+# Single-frame first (opt-in in resolve_lane_width; the detector front end turns
+# it on, the ELSED pipeline keeps the plain policy): before the first adoption, a
+# frame whose OWN near-field estimate passes the quality gate uses that estimate
+# for itself instead of the constant (OpenLane up&down / held-out: constant
+# 7.8–8.4 % median width error on those frames, own estimate 2.3 %; CARLA route
+# starts 7–15 → 0.5–6 cm). It is not adopted — the run policy above decides that.
+# ⚠ Tried and rejected (2026-10-03): no pitch for a held frame whose own (failed)
+# estimate departs from the held width by > 3 %. It targets the real failure — a
+# lane widening into a turn bay reads as a grade (OpenLane held-out 3.4→4.8 m over
+# 20 m: 0.5–1 m height errors on a held 3.15 m; held-out paired near 6.39 → 5.10 cm)
+# — but a FAILED estimate is that noisy everywhere: CARLA held frames depart 8–9 %
+# (median) with a constant 3.5 m width, at grade changes and dash gaps, so it cut
+# CARLA output 41→18 / 53→25 / 99→73 % on frames averaging 2.7–4.1 cm. No
+# threshold separates the two (15 %: 9 of 28 bad OpenLane frames vs 76 good CARLA).
 
 
 def back_project_widths(widths, f_x, f_y, image_height, w_real):
@@ -364,8 +397,119 @@ class NearfieldWidthCalibrator:
         return self.w_real
 
 
+class KalmanWidthCalibrator:
+    """Per-sequence w_real as a 1-D Kalman filter over the near-field estimates.
+
+    Same interface and reporting as NearfieldWidthCalibrator (advance_to /
+    update / status / reason / hold_frames / hold_m / n_pooled / last_estimate /
+    z_lo / z_hi), so the pipeline takes either. State: the width, a random walk
+    whose variance grows by KALMAN_Q_M2_PER_M per metre travelled. Measurement:
+    the frame's θ0-free intercept when it passes the quality gate, variance
+    (KALMAN_SIGMA_REL·z)². A pass whose innovation exceeds KALMAN_GATE·√(P+R) is
+    an outlier and not used (reason "outlier"); KALMAN_RESET_N outliers in a row
+    (passes, not frames — failing frames in between do not break the count)
+    restart the filter on the new value. The first pass initialises it; before
+    that update() returns None ("no_anchor"). See the note above the constants.
+
+    `n_pooled` is the number of passes behind the value (since the last
+    (re)start); `n_resets` counts restarts. Needs `advance_to`: without odometry
+    no process noise is added and the width is treated as constant.
+    """
+
+    sequence = True
+
+    def __init__(self, f_x, f_y, image_height, camera_height):
+        self.f_x = f_x
+        self.f_y = f_y
+        self.image_height = image_height
+        self.camera_height = camera_height
+        self.z_lo, self.z_hi, self.curvature_ok = nearfield_window(
+            f_y, camera_height, image_height)
+        self.w_real = None
+        self.status = None
+        self.reason = None
+        self.hold_frames = None
+        self.hold_m = None
+        self.n_pooled = None
+        self.n_resets = 0
+        self.last_estimate = None
+        self._dist = None
+        self._frame = -1
+        self._w = None                         # state
+        self._p = None                         # its variance (m²)
+        self._pred_dist = None                 # odometry at the last prediction
+        self._outliers = 0                     # consecutive gated-out passes
+        self._last_update = None               # (dist, frame) of the last update
+
+    def advance_to(self, dist_m):
+        """Cumulative travel distance (m) of the frame about to be fed."""
+        self._dist = float(dist_m)
+
+    def update(self, left_curve, right_curve):
+        """Feed one frame's lane curves; returns the w_real to use for it, or
+        None before the sequence's first passing estimate (see `status`)."""
+        self._frame += 1
+        if self._w is not None and self._dist is not None and self._pred_dist is not None:
+            self._p += KALMAN_Q_M2_PER_M * max(self._dist - self._pred_dist, 0.0)
+        self._pred_dist = self._dist
+        widths = nearfield_widths_from_curves(
+            left_curve, right_curve, self.f_y, self.camera_height,
+            self.image_height, z_lo=self.z_lo, z_hi=self.z_hi)
+        est = estimate_w_real_nearfield(
+            widths, self.f_x, self.f_y, self.image_height, self.camera_height,
+            z_near_min=self.z_lo, z_near_max=self.z_hi)
+        self.last_estimate = est
+        updated = False
+        if est is None or not est["quality_ok"]:
+            self.reason = "no_nearfield_rows" if est is None else "quality_gate"
+        else:
+            z = est["w_real_z0"]
+            r = (KALMAN_SIGMA_REL * z) ** 2
+            if self._w is None:
+                self._w, self._p, self.n_pooled = z, r, 1
+                updated = True
+            elif abs(z - self._w) <= KALMAN_GATE * np.sqrt(self._p + r):
+                k = self._p / (self._p + r)
+                self._w += k * (z - self._w)
+                self._p *= 1.0 - k
+                self.n_pooled += 1
+                self._outliers = 0
+                updated = True
+            else:
+                self._outliers += 1
+                self.reason = "outlier"
+                if self._outliers >= KALMAN_RESET_N:      # the width really changed
+                    self._w, self._p, self.n_pooled = z, r, 1
+                    self._outliers = 0
+                    self.n_resets += 1
+                    updated = True
+        if updated:
+            self._last_update = (self._dist, self._frame)
+            self.reason = None
+        if self._w is None:
+            self.status = "no_anchor"
+            self.w_real = self.hold_frames = self.hold_m = self.n_pooled = None
+            return None
+        self.hold_frames = self._frame - self._last_update[1]
+        self.hold_m = (None if self._dist is None or self._last_update[0] is None
+                       else self._dist - self._last_update[0])
+        self.status = "measured" if self.hold_frames == 0 else "held"
+        self.w_real = float(self._w)
+        return self.w_real
+
+
+def width_calibrator(kind, f_x, f_y, image_height, camera_height):
+    """One sequence's width calibrator: "median" (NearfieldWidthCalibrator) or
+    "kalman" (KalmanWidthCalibrator) — config `fitting.width_filter`."""
+    if kind == "kalman":
+        return KalmanWidthCalibrator(f_x, f_y, image_height, camera_height)
+    if kind == "median":
+        return NearfieldWidthCalibrator(f_x, f_y, image_height, camera_height)
+    raise ValueError(f"width_filter must be 'median' or 'kalman', got {kind!r}")
+
+
 def resolve_lane_width(calibrator, left_curve, right_curve,
-                       last_resort_lane_width=None):
+                       last_resort_lane_width=None, *, single_frame_first=False):
     """This frame's metric lane width and where it came from.
 
     Feeds the calibrator (measured / held), and only when its sequence has no
@@ -373,10 +517,18 @@ def resolve_lane_width(calibrator, left_curve, right_curve,
     "last_resort" so a pitch on an assumed scale is never passed off as a
     measured one. Returns (width or None, status); status is the calibrator's,
     or "last_resort". None with "no_anchor" means: output no pitch.
+
+    single_frame_first: before the first adoption, use this frame's own
+    gate-passing estimate instead (status "single_frame"; see the hold-policy
+    note above the constants).
     """
     w = calibrator.update(left_curve, right_curve)
-    if w is None and last_resort_lane_width is not None:
-        return float(last_resort_lane_width), "last_resort"
+    if w is None:
+        est = calibrator.last_estimate
+        if single_frame_first and est is not None and est["quality_ok"]:
+            return float(est["w_real_z0"]), "single_frame"
+        if last_resort_lane_width is not None:
+            return float(last_resort_lane_width), "last_resort"
     return w, calibrator.status
 
 
