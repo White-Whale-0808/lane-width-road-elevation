@@ -26,14 +26,17 @@ NEARFIELD_CURV_R_M = 1500.0    # worst-case vertical curve (OpenLane 60 m rise p
 NEARFIELD_CURV_TOL = 0.005     # tolerable anchor depth error from that curvature
 NEARFIELD_Z_HI_FACTOR_CAP = 3.0
 # Quality gate: rejects a merely noisy fit — too few rows, too short a z span,
-# residual scatter beyond ~2 px of edge noise (1 px is z/f_x metres), or |θ0|
-# past any plausible mounting angle.
+# residual scatter beyond ~2 px of edge noise (1 px is z/f_x metres) — and a
+# near field off the wheel plane. The camera sits level to within body pitch
+# (OpenLane extrinsics −0.3…+0.8°), so |θ0| > 1° means the window lies on a
+# grade change, where the intercept is biased about 4 % per degree of θ0
+# (WWH-27: per-frame width error vs θ0 corr −0.90 on CARLA, −0.48 on OpenLane).
 # ⚠ It cannot reject a confidently wrong fit (OpenLane tram tracks: residual MAD
 # below a healthy frame's, width 1.58 m vs 3.17 true). Catch that in line selection.
 NEARFIELD_MIN_POINTS = 8
 NEARFIELD_MIN_SPAN_FRAC = 0.5
 NEARFIELD_RESID_PX = 2.0
-NEARFIELD_THETA0_MAX_DEG = 3.0
+NEARFIELD_THETA0_MAX_DEG = 1.0
 # Adopt policy: a width is adopted only after passes span NEARFIELD_MIN_RUN_M of
 # travel — at a curvature inflection an isolated frame passes with its bias at
 # its largest. A run survives one failed frame (a flickering near field is a
@@ -42,6 +45,18 @@ NEARFIELD_THETA0_MAX_DEG = 3.0
 NEARFIELD_MIN_RUN_M = 0.5
 NEARFIELD_MIN_RUN_FRAMES = 2       # a run is at least two frames, whatever the spacing
 NEARFIELD_RUN_MAX_DROPOUT = 1      # consecutive failed frames a run survives
+# Pooling: one frame's intercept carries the line-position drift across the
+# window, amplified ~5x by the extrapolation to z=0 (WWH-26), and that error is
+# largely independent from frame to frame. Once the sequence holds
+# NEARFIELD_POOL_MIN_N passing estimates, the width is the median of the last
+# NEARFIELD_POOL_K of them, and the run policy above no longer applies (the
+# median already outvotes an isolated inflection-point pass). The minimum keeps
+# one or two early wrong values from being held as a "median".
+# K counts passes, not metres: 40 passes span ~33 m on OpenLane, ~8 m on CARLA.
+# A metre cap was worse on OpenLane (too few passes left); an unbounded pool
+# fails where the width really changes (CARLA full_road 3.29 / 3.55 m: 6.5 %).
+NEARFIELD_POOL_K = 40
+NEARFIELD_POOL_MIN_N = 3
 # Hold policy: within one continuous sequence the last adopted value is held
 # however stale, and its age is reported (`hold_m` / `hold_frames`). Before the
 # first adoption there is no value (`status` "no_anchor"); the pipeline then uses
@@ -230,8 +245,10 @@ class NearfieldWidthCalibrator:
     the NEARFIELD_* constants); its width — the θ0-free intercept — is adopted
     once a run of passes spans NEARFIELD_MIN_RUN_M of travel AND at least
     NEARFIELD_MIN_RUN_FRAMES passing frames; the run survives up to
-    NEARFIELD_RUN_MAX_DROPOUT consecutive failed frames. Any other frame
-    reuses the last
+    NEARFIELD_RUN_MAX_DROPOUT consecutive failed frames. From the
+    NEARFIELD_POOL_MIN_N-th pass of the sequence on, every pass adopts the
+    median of the last NEARFIELD_POOL_K passes instead (see the pooling note
+    above the constants). Any other frame reuses the last
     adopted value, however long ago it was adopted; before the first adoption
     there is no value at all and update() returns None (see the hold-policy
     note above the constants — the last-resort constant is the pipeline's
@@ -255,6 +272,7 @@ class NearfieldWidthCalibrator:
                    None when measured
       hold_frames  frames since the adoption in use (0 when measured)
       hold_m       metres since it; None without odometry
+      n_pooled     passes behind the value in use (1 = a single frame's)
 
     Only the metric stage consumes the value: stages 1-3 take no lane width,
     and truncate_at_depth_jump works in lane-width units.
@@ -281,6 +299,8 @@ class NearfieldWidthCalibrator:
         self._dropout = 0                      # consecutive failures inside it
         self._last_adopt = None                # (dist, frame) of last adoption
         self._held = None
+        self._pool = []                        # w_real_z0 of the last POOL_K passes
+        self.n_pooled = None                   # estimates behind the value in use
 
     def advance_to(self, dist_m):
         """Cumulative travel distance (m) of the frame about to be fed."""
@@ -291,6 +311,12 @@ class NearfieldWidthCalibrator:
         if self._dist is None or since[0] is None:
             return None
         return self._dist - since[0]
+
+    def _pooled(self, w):
+        """Record a passing estimate; the estimates the pooled median takes."""
+        self._pool.append(w)
+        del self._pool[:-NEARFIELD_POOL_K]
+        return self._pool
 
     def update(self, left_curve, right_curve):
         """Feed one frame's lane curves; returns the w_real to use for it, or
@@ -315,18 +341,21 @@ class NearfieldWidthCalibrator:
             self._dropout = 0
             self._run_passes += 1
             span_m = self._span_m(self._run_start)
-            run_ok = (not self.sequence
+            pool = self._pooled(est["w_real_z0"]) if self.sequence else []
+            pooled = len(pool) >= NEARFIELD_POOL_MIN_N
+            run_ok = (pooled or not self.sequence
                       or (self._run_passes >= NEARFIELD_MIN_RUN_FRAMES
                           and (span_m is None or span_m >= NEARFIELD_MIN_RUN_M)))
             if run_ok:
-                self._held = est["w_real_z0"]
+                self._held = float(np.median(pool)) if pooled else est["w_real_z0"]
+                self.n_pooled = len(pool) if pooled else 1
                 self._last_adopt = (self._dist, self._frame)
                 self.reason = None
             else:
                 self.reason = "run_too_short"
         if self._held is None:
             self.status = "no_anchor"
-            self.w_real = self.hold_frames = self.hold_m = None
+            self.w_real = self.hold_frames = self.hold_m = self.n_pooled = None
             return None
         self.hold_frames = self._frame - self._last_adopt[1]
         self.hold_m = self._span_m(self._last_adopt)

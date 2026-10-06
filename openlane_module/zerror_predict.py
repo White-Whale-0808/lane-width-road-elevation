@@ -7,8 +7,9 @@
 資料是 export_updown.py 轉出的官方上下坡子集（預設 D:/datasets/openlane_updown），一段一個
 NearfieldWidthCalibrator，設定與 WWH-25 的評估相同（不精修、近場只用漆的列量寬、有寬度檢查）。
 相機取自每段的 metadata.json（libs.dataset_camera）。偵測器的權重與前處理預設都讀
-config/lane_detector_clrnet.yaml；用 --weights 換權重時必須同時給 --mode 與 --cut-frac，
-前處理要跟權重的訓練方式一致（CULane 權重配錯前處理會掉線，86% → 66.5%）。
+config/lane_detector_clrnet.yaml；用 --weights 換權重時必須同時給 --mode、--cut-frac 與 --conf，
+前處理要跟權重的訓練方式一致（CULane 權重配錯前處理會掉線，86% → 66.5%），分數尺度也跟權重走
+（ep10 用 0.4 會丟掉抓對的線，要 --conf 0.3，WWH-28）。
 
 每一列的 3D 點怎麼來（跟 pitch_estimation 同一套幾何）：
   widths 的每一列 (v, w_px) → 深度 Z = f_x·w_real/w_px
@@ -72,23 +73,29 @@ def main():
     ap.add_argument('--cut-frac', type=float, default=None)
     ap.add_argument('--img-w', type=int, default=None)
     ap.add_argument('--img-h', type=int, default=None)
+    ap.add_argument('--conf', type=float, default=None, help='偵測門檻；省略＝config 的 conf_threshold（給 --weights 時必給）')
+    ap.add_argument('--refine', default=None, choices=['none', 'center', 'solid', 'smooth'], help='線位置精修（pipeline_clrnet refine）；省略＝config 的 fitting.refine')
     ap.add_argument('--max-depth', type=float, default=None, help='pitch 輸出最遠深度；預設不修剪（仍有 z_cap 45 m）')
     ap.add_argument('--limit', type=int, default=0)
     a = ap.parse_args()
-    if a.weights and (a.mode is None or a.cut_frac is None):
-        ap.error('--weights 要搭配 --mode 與 --cut-frac（前處理必須跟權重的訓練方式一致）')
+    if a.weights and (a.mode is None or a.cut_frac is None or a.conf is None):
+        ap.error('--weights 要搭配 --mode、--cut-frac 與 --conf（前處理與分數尺度都跟權重走）')
 
     cfg = yaml.safe_load(open('config/inference_road_lane_segmentation.yaml', encoding='utf-8'))
     ccfg = yaml.safe_load(open('config/lane_detector_clrnet.yaml', encoding='utf-8'))
     pe, mo, lf = cfg['pitch_estimation'], cfg['model'], cfg['lane_fitting']
     cc = ccfg['clrnet']
+    if a.conf is not None:
+        cc = {**cc, 'conf_threshold': a.conf}
     if a.weights is None:
         det, cut_frac, mode = CLRNet.from_config(cc, device=mo['device'])
     else:
         det = CLRNet(weights=a.weights, device=mo['device'], conf=cc['conf_threshold'],
                      img_w=a.img_w or cc.get('img_w', 800), img_h=a.img_h or cc.get('img_h', 320))
         cut_frac, mode = a.cut_frac, a.mode
-    print(f'detector: weights={a.weights or cc.get("weights") or "(default CULane)"} mode={mode} cut_frac={cut_frac}')
+    refine = a.refine or ccfg['fitting'].get('refine', 'none')
+    print(f'detector: weights={a.weights or cc.get("weights") or "(default CULane)"} mode={mode} '
+          f'cut_frac={cut_frac} conf={cc["conf_threshold"]} refine={refine}')
 
     out = a.out_dir / f'pred_{a.tag}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +121,7 @@ def main():
                 try:
                     res = infer_one_clrnet(det, str(img), (H, W), lf['num_samples'], f_x, f_y, h,
                                            cut_frac=cut_frac, detector_mode=mode, tail='keep',
-                                           refine='none', nearfield_source='paint', ego_guard=True,
+                                           refine=refine, nearfield_source='paint', ego_guard=True,
                                            max_depth_m=a.max_depth,
                                            samples_per_meter=lf.get('samples_per_meter'),
                                            method=pe.get('method', 'windowed'),
@@ -122,6 +129,7 @@ def main():
                                            last_resort_lane_width=ccfg['fitting']['last_resort_lane_width'],
                                            return_debug=True)
                     rec['status'] = res['w_real_status']
+                    rec['refined'] = res.get('refined', False)
                     rec['lanes'] = lanes_3d(res, f_x, W)
                 except Exception as e:
                     rec['status'] = f'error:{type(e).__name__}:{e}'[:120]

@@ -221,3 +221,36 @@ def test_model_curve_and_src_at():
     assert list(c["y"]) == [10, 11, 12] and list(c["x"]) == [1, 2, 3]
     assert list(src_at(c, [10, 11, 12, 11.4])) == [False, True, True, True]
     assert model_curve([1.0], [1.0], [True]) is None
+
+
+def test_smooth_refine_corrects_gap_rows_of_a_dashed_line():
+    """A steady 0.10 m lateral detector error, paint seen on every other 20-row
+    block: the smoothed offset moves the gap rows onto the line too."""
+    from libs.inference.model_lane_fitting import smooth_refine
+    rows = np.arange(300.0, syn.IMG_H)
+    z = syn.F_Y * syn.CAM_H / (rows - syn.CY)
+    x_true = syn.CX - syn.F_X * 1.6 / z
+    x_prior = x_true + syn.F_X * 0.10 / z
+    paint = ((rows - rows[0]) // 20) % 2 == 0                         # dashes at both ends
+    x_snap = np.where(paint, x_true, x_prior)
+    x = smooth_refine(rows, x_prior, x_snap, paint, syn.F_X, syn.F_Y, syn.CAM_H, syn.IMG_H)
+    assert np.abs(x - x_true).max() < 1e-6
+    few = np.zeros_like(paint); few[:5] = True                          # too little paint
+    assert np.array_equal(smooth_refine(rows, x_prior, x_snap, few, syn.F_X, syn.F_Y, syn.CAM_H, syn.IMG_H), x_prior)
+
+
+def test_smooth_refine_ignores_occluder_snaps():
+    """Snaps onto a car body (0.8 m off) or scattered snaps are not paint of this
+    line: the detector line, already right, must stay put."""
+    from libs.inference.model_lane_fitting import smooth_refine
+    rows = np.arange(300.0, syn.IMG_H)
+    z = syn.F_Y * syn.CAM_H / (rows - syn.CY)
+    x = syn.CX - syn.F_X * 1.6 / z
+    paint = np.ones(len(rows), dtype=bool)
+    car = (rows >= 400) & (rows < 460)
+    snap = np.where(car, x + syn.F_X * 0.8 / z, x)                      # car body beside the line
+    assert np.allclose(smooth_refine(rows, x, snap, paint, syn.F_X, syn.F_Y, syn.CAM_H, syn.IMG_H), x)
+    rng = np.random.default_rng(0)
+    noisy = x + syn.F_X * rng.uniform(-0.25, 0.25, len(rows)) / z         # scattered, under the cap
+    assert np.abs(smooth_refine(rows, x, noisy, paint, syn.F_X, syn.F_Y, syn.CAM_H, syn.IMG_H) - x).max() < 0.5
+

@@ -9,7 +9,7 @@ carla_module/verify_carla_geometry.py
     直接量測。這支腳本直接問地圖與模擬器，一槌定音。
 
     推論端 config 目前是 w_real=3.216 / camera_height=1.08，比值 2.9778。
-    這個比值是影像量出來的（`debug/check_width_calibration.py`，std 0.003），
+    這個比值是影像量出來的（`debug/carla_gt/check_width_calibration.py`，std 0.003），
     可信；未定的是它該怎麼拆成 W 和 h。本腳本量的就是拆法。
 
 量測項目（對應 to-do.md「第 1 組：一次性驗證」）

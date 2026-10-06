@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 from libs.inference.lane_fitting import lane_curve
-from libs.inference.pitch_estimation import (NearfieldWidthCalibrator,
+from libs.inference.pitch_estimation import (NEARFIELD_POOL_K,
+                                             NEARFIELD_POOL_MIN_N,
+                                             NearfieldWidthCalibrator,
                                              back_project_widths,
                                              estimate_pitch_from_curves,
                                              estimate_w_real_nearfield,
@@ -106,6 +108,13 @@ def test_nearfield_separates_mounting_pitch_from_width():
     assert result["w_real_z0"] == pytest.approx(syn.W_REAL, abs=0.02)
     # the plain median cannot see θ0 and must carry the +w·θ0·z̄/h bias
     assert result["w_real_med"] > syn.W_REAL + 0.2
+
+
+def test_quality_gate_rejects_a_tilted_near_field():
+    """|θ0| beyond what body pitch gives a level camera means the window is
+    off the wheel plane (a grade change): rejected, however clean the fit."""
+    assert _nearfield(0.5)["quality_ok"]
+    assert not _nearfield(1.5)["quality_ok"]
 
 
 def test_nearfield_declines_without_enough_near_rows():
@@ -210,6 +219,42 @@ def test_a_lone_image_uses_its_own_measurement():
                                     sequence=False)
     assert lone.update(*_curves(0.0, 8.0, 30.0)) is None
     assert lone.reason == "no_nearfield_rows"
+
+
+def _fed_w(cal, dist, w_real):
+    """Feed a flat road whose lane is w_real wide."""
+    cal.advance_to(dist)
+    left, right = syn.road_points(0.0, z_near=2.0, z_far=30.0, w_real=w_real)
+    return cal.update(lane_curve(left), lane_curve(right))
+
+
+def test_pooled_width_outvotes_a_wrong_pass():
+    """From the POOL_MIN_N-th pass on the width is the median of the passes,
+    so one wrong pass no longer replaces a good value — the single-frame
+    policy, still in force before that, would have adopted it."""
+    cal = NearfieldWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    _fed_w(cal, 0.0, 3.25)
+    assert _fed_w(cal, 0.7, 3.25) == pytest.approx(3.25, rel=1e-6)
+    assert cal.n_pooled == 1                          # the run adopted one frame
+    assert NEARFIELD_POOL_MIN_N == 3
+    assert _fed_w(cal, 1.4, 4.0) == pytest.approx(3.25, rel=1e-6)
+    assert (cal.status, cal.n_pooled) == ("measured", 3)
+
+
+def test_pool_forgets_all_but_the_last_k_passes():
+    """A changed lane width takes over once it is the majority of the last
+    POOL_K passes."""
+    k = NEARFIELD_POOL_K
+    cal = NearfieldWidthCalibrator(syn.F_X, syn.F_Y, syn.IMG_H, syn.CAM_H)
+    for i in range(2 * k):
+        _fed_w(cal, 0.7 * i, 3.25)
+    for i in range(k // 2 - 1):
+        _fed_w(cal, 0.7 * (2 * k + i), 3.75)
+    assert cal.w_real == pytest.approx(3.25, rel=1e-6)
+    _fed_w(cal, 0.7 * 3 * k, 3.75)
+    _fed_w(cal, 0.7 * 3 * k + 0.7, 3.75)
+    assert cal.w_real == pytest.approx(3.75, rel=1e-6)
+    assert cal.n_pooled == k
 
 
 def test_last_resort_only_before_the_first_measurement():
