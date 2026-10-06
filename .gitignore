@@ -27,3 +27,6 @@ models/
 # 本機修補版 elsed 原始碼（需執行 python scripts/setup_elsed.py 產生）
 elsed_src/
 pidnet_pretrained_model/PIDNet_L_Cityscapes_test.pt
+
+# 對照模型推論在目前目錄留下的前處理快取
+.cache/

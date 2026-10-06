@@ -91,7 +91,8 @@ def frame_record(data):
     return meta, depth, height
 
 
-def export_segment(seg_dir, out_dir, image_root, keep_stems, tags, want_images):
+def export_segment(seg_dir, out_dir, image_root, keep_stems, tags, want_images,
+                   subset='official up&down tag (test/1000_updown.txt), unfiltered'):
     rows, prof_rows = [], []
     travelled, prev = 0.0, None
     fid = 0
@@ -129,7 +130,7 @@ def export_segment(seg_dir, out_dir, image_root, keep_stems, tags, want_images):
     pd.DataFrame(prof_rows, columns=['frame_id', 'd_req_m', 'x', 'y', 'z']
                  ).to_csv(out_dir / 'road_profile.csv', index=False)
     with open(out_dir / 'metadata.json', 'w') as fh:
-        json.dump(dict(source='OpenLane', subset='official up&down tag (test/1000_updown.txt), unfiltered',
+        json.dump(dict(source='OpenLane', subset=subset,
                        segment=seg_dir.name, frames=len(rows),
                        f_x=round(VIRT_FX, 4), f_y=round(VIRT_FY, 4), c_x=VIRT_CX, c_y=VIRT_CY,
                        resize_size=[OUT_H, OUT_W], camera_height=2.116,
@@ -145,22 +146,35 @@ def main(argv=None):
     ap.add_argument('--openlane', type=Path, default=Path('D:/datasets/openlane'))
     ap.add_argument('--out', type=Path, default=Path('D:/datasets/openlane_updown'))
     ap.add_argument('--no-images', action='store_true')
+    ap.add_argument('--images', type=Path, default=None,
+                    help='影像根目錄（其下 validation/<段>/<幀>.jpg）；預設＝--openlane')
     ap.add_argument('--limit-segments', type=int, default=None)
+    ap.add_argument('--segments', type=Path, default=None,
+                    help='一行一個 validation 片段名：改成轉出這些片段的**全部**幀（不看 up&down 標籤），'
+                         '例如保留驗證集（select_holdout.py）')
     a = ap.parse_args(argv)
 
     cases = load_cases(a.openlane)
     updown = cases.pop('updown')
     by_seg = {}
-    for seg, stem in updown:
-        by_seg.setdefault(seg, set()).add(stem)
+    if a.segments is None:
+        for seg, stem in updown:
+            by_seg.setdefault(seg, set()).add(stem)
+        subset = 'official up&down tag (test/1000_updown.txt), unfiltered'
+        print(f'up&down: {len(updown)} frames in {len(by_seg)} segments')
+    else:
+        for seg in a.segments.read_text(encoding='utf-8').split():
+            by_seg[seg] = {p.stem for p in (a.openlane / 'validation' / seg).glob('*.json')
+                           if not p.name.startswith('._')}
+        subset = f'all frames of the segments in {a.segments.name}, unfiltered'
+        print(f'{a.segments.name}: {sum(map(len, by_seg.values()))} frames in {len(by_seg)} segments')
     segs = sorted(by_seg)[:a.limit_segments]
-    print(f'up&down: {len(updown)} frames in {len(by_seg)} segments')
 
     all_frames, index = [], []
     for i, seg in enumerate(segs):
         seg_dir = a.openlane / 'validation' / seg
-        df = export_segment(seg_dir, a.out / seg, a.openlane, by_seg[seg], cases,
-                            not a.no_images)
+        df = export_segment(seg_dir, a.out / seg, a.images or a.openlane, by_seg[seg], cases,
+                            not a.no_images, subset)
         df.insert(0, 'segment', seg)
         all_frames.append(df)
         index.append(dict(
