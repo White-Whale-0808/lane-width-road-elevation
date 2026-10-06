@@ -1,8 +1,10 @@
-# mono3D-two-plane-geo
+# lane-width-road-elevation
+
+**基於車道寬度之單目前方道路起伏估測** — Lane-Width-Based Monocular Estimation of the Road Elevation Profile Ahead
 
 Monocular road pitch estimation from a single camera. The pipeline runs five sequential stages over one image and returns a **continuous pitch(z) curve** — the road's pitch angle in degrees as a function of depth ahead of the camera — using only a pretrained semantic segmentation model and classical projective geometry. No depth sensor required.
 
-> **On the name:** the project started with an explicit near/far two-plane model. That model was replaced in WWH-9 by a continuous pitch(z) curve; there is no longer a knee or a pair of planes. The repository name is historical.
+> **On the name:** formerly `mono3D-two-plane-geo` (renamed 2026-10-06). That name came from the first model, an explicit near/far pair of planes, which WWH-9 replaced with a continuous pitch(z) curve — there is no longer a knee or a pair of planes. The new name keeps what has not changed since the start: the lane width is the ruler, and the road's elevation profile ahead is the output. PRs #1–#21, their branches and the Linear project still carry the old name.
 
 ---
 
@@ -91,7 +93,7 @@ Three of the five lateral constants are gone, each on measured evidence. The abl
 ## Project Structure
 
 ```
-mono3D-two-plane-geo/
+lane-width-road-elevation/
 ├── config/
 │   ├── inference_road_lane_segmentation.yaml   # Main config for all inference
 │   └── train_road_segmentation.yaml            # Config for the (legacy) Resnet101 training path

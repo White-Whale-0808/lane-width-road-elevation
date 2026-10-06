@@ -28,7 +28,7 @@ Why the CENTRE and not the inner edge the ELSED front end measures: the
 detector is trained on centre-line labels, so its rows (src = model) are
 centres. Refining paint rows to the inner edge would make the reference
 point jump by half a stripe at every paint/model switch — a width step along
-depth, which the two-plane stage reads as grade (WWH-25 §3). With both on the
+depth, which pitch_estimation reads as grade (WWH-25 §3). With both on the
 centre the near-field width is centre-to-centre, which is also what OpenLane's
 lane_width_gt measures.
 

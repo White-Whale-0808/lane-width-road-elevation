@@ -1,4 +1,4 @@
-# TODO — mono3D-two-plane-geo
+# TODO — lane-width-road-elevation
 
 > **本檔只留「還沒做的事」。** 已完成的項目與被推翻的假說一律移出，論證留在
 > Linear 票（WWH-7 ~ WWH-28）與 commit 訊息裡。
@@ -13,134 +13,42 @@
 > TODO 已不存在而刪除、全檔行號重新對照。
 > **2026-10-02**：WWH-27（車道寬跨幀中位數＋俯仰門檻 1°）、WWH-28（ep10 偵測門檻 0.3）
 > 之後，新增第 4 區塊「偵測器前端」，§3 的「整段量不到寬度」搬過去合併。
+> **2026-10-06**：舊物理方法（ELSED＋PIDNet 前端：`lane_segmentation` 追蹤器、`lane_fitting`
+> 內緣鏈、ELSED 線段）的待辦全部刪除 —— 原第 1 區塊只留 CLRNet 流程也在用的幾何常數，
+> `docs/diagrams/` 搬到 Repo 層級 §C；Repo §A（單張 runner 攤開 ELSED pipeline）、§D 的
+> `inner_chain_points` 測試、未解項 4 的 WWH-21 一併刪除。原文在 git 歷史與 WWH-15／21 票上。
 
 四大區塊：
-1. [`lane_segmentation.py` 優化](#lane_segmentationpy-優化)
+1. [寫死的幾何常數](#寫死的幾何常數)
 2. [Repo 層級待辦](#repo-層級待辦)
 3. [CARLA 資料採集與標定](#carla-資料採集與標定)
 4. [偵測器前端（CLRNet）](#偵測器前端clrnet)
 
 ---
 
-# lane_segmentation.py 優化
+# 寫死的幾何常數
 
-## 高優先
+CLRNet 流程也在用的常數：`pipeline_clrnet` 呼叫 `lane_fitting.truncate_at_depth_jump`，
+`model_lane_fitting` 用到 `geometry.CameraGeometry` 與 `paint_evidence` 的 `_STRIPE_M`／`_RIDGE_THR`，
+寬度與 pitch 全在 `pitch_estimation`。註解多數記了實測依據，但全部寫死。
+⚠ 這批大多屬於「有幾何推導、刻意留常數」：WWH-15 的決定是有物理推導的門檻不進 config，
+以免邀請手調本來不該手調的東西。列在這裡是清單完整，不是說一定要搬。
 
-### 1. 把具名常數搬進 config（影響準度，跨相機高度可調）
-模組頂部 **L40–L54** 的常數命名清楚、有物理意義，但全部寫死、無法調整。
-同一份 code 要跑 CARLA(相機 2.4m) 和 dataset(1.08m) 兩種高度，這些值卻不能隨場景變。
-（legacy 分支刪除後，這些是**唯一**還在控制追蹤器行為的可調量。）
-
-> ⚠ **2026-08-27 未決的設計爭議**：WWH-15 刻意把 `paint_evidence.py` 的門檻
-> **留在模組常數**，理由是「有物理推導的門檻不進 config，以免邀請使用者手調
-> 本來不該手調的東西」。本節與那個決定直接矛盾。建議先裁決分界線：
-> **只搬「真的跟場景/相機綁定」的**（下表 magic 那 6 項，且應在校準後才搬），
-> **有依據的（`_SEED_DELTA`、`_MAX_GRADE_DEG`、`_SUPPORT_MIN_LEN_PX`）留常數
-> 但補推導註解**。決定之前不要動手。
-
-> **2026-09-15 更新：這一節的前提被推翻了一半。** 問題不是「這些常數要不要
-> 搬進 config」，而是**有幾個根本不該存在**。實測（把閘門的橫向距離推到 1e6 m
-> 等於關閉，再比對 pitch 曲線雜湊；CARLA 120 幀 ＋ OpenLane Tier A 168 幀）：
-> **ROI 走廊與種子視窗外界在 288/288 幀上零影響，已刪除**；跨車道上限改成
-> **每幀量測**。搬進 config 的爭議對這三項自動消失 —— 刪掉的東西不需要介面。
-
-- [x] ~~`_TOL_LANE_FRACTION = 0.10`~~ → `_TOL_X_M = 0.325`（改寫成絕對橫向距離，
-      commit `08cb806`）。**判定理由仍未解**，見下表
-- [ ] `_TOL_PX_FLOOR = 3.0`（ELSED 端點噪聲下限 px）
-- [x] ~~`_CROSS_LANE_FRACTION = 0.40` 乘 config 車道寬~~ → 乘**每幀量到**的車道寬
-      （`_measure_lane_width_m`，commit `6e7f4fb`）。留下的 0.40 是無因次比例
-- [x] ~~`_SEED_DELTA = 0.5`~~ **已刪**（種子視窗外界零影響，commit `45e89a3`）
-- [ ] `_SEED_X_MAX = 8.0` / `_NOISE_X_MAX = 16.0`（斜率閘門的橫向公尺數）
-- [ ] `_MODEL_MEMORY_M = 4.0`（局部模型擬合的深度範圍）
-- [ ] `_RESET_GAP_M = 2.0`（深度跳變 → 可能換平面的閾值）
-- [ ] `_MAX_GRADE_DEG = 15.0`（最壞路面坡度，WWH-15 後住在 `geometry.py`）
-- [ ] `_GRADE_RAMP_Z0 = 6.0` / `_GRADE_RAMP_SPAN = 6.0`（坡度 slack 的 ramp，同上）
-- [ ] `_SUPPORT_MIN_LEN_PX = 60.0`（WWH-6 新增，2026-07-03 首版未列）
-
-#### 1a. 這些常數是否有依據？(是否算 magic number)
-重點結論：**幾何/論文給的是「縮放形式」(threshold 隨 y、車道寬、深度怎麼變)，
-不是「係數本身」。** 所以即使 docstring 標為 "geometry-derived"，多數 scalar
-仍是手選 → 嚴格定義下還是 magic number，只是「有動機的」。
-
-分類（依依據強度）：
-
-| 常數 | 形式來源 | scalar 本身 | 判定 | 可 ref |
-|---|---|---|---|---|
-| ~~`_SEED_DELTA = 0.5`~~ | — | **已刪 2026-09-15**。實測：刪除前後 764 個種子一個都沒動（552 幀虛線資料）。⚠ 但**不是**因為「最內側優先讓外界變多餘」—— 橫帶迴圈在第一個有候選的橫帶就 return，外界清空一帶確實會換到別帶起種。真正的原因是它寫成 `px_max_at(3.25)`、比的是含坡度餘裕的 `z_min`，6 m 以後放行寬度遠大於 3.25（見 WWH-21） | **實測無作用，但原論證錯誤** | — |
-| `_MAX_GRADE_DEG = 15.0` | 工程標準 | 15°(~27%) 是道路最大縱坡的保守上界 | **有依據（外部標準）** | 道路幾何設計規範（如 AASHTO 縱坡上限） |
-| `_SUPPORT_MIN_LEN_PX = 60.0` | 實測分佈 | 註解記了依據：電線桿/山坡 32–54 px，合法遠段 ≥77 px | **有依據（實測，樣本數未知）** | 註解 L47–49；建議補樣本數 |
-| `_TOL_PX_FLOOR = 3.0` | 感測器噪聲 | 3px 安全下限，可對應 ELSED 端點抖動 | **半 magic（經驗有依據）** | `docs/papers/ELSED_*.pdf`（定位精度） |
-| `_TOL_X_M = 0.325`（原 `_TOL_LANE_FRACTION`） | 絕對橫向距離 | 0.10×3.25 的等價值 | **仍 magic，且理由未定**：要吸收的若是 ELSED 端點雜訊就是像素域（`_TOL_PX_FLOOR` 已在做），若是防跟隔壁車道搞混就是公尺域 —— 兩者對深度的縮放方向相反，現在混用 | 無 |
-| `_CROSS_LANE_FRACTION = 0.40` | 無因次比例 | 40%<50% 中線給 margin，係數手選 | **從 magic 降級為比例**：它縮放的車道寬每幀量測，所以不再假設這條路多寬。固定 1.30 m 的實測代價：CARLA 上關掉掉 27.68 m（在保護），OpenLane 上關掉反而多 15.68 m（在綁手綁腳） | 無 |
-| `_SLOPE_GATE_X_M = 3.25` | 絕對橫向距離 | 原本寫成 1×車道寬 | **magic，但已知必要且無法量測**：關掉它在 OpenLane 上掉 2 幀、中位視距少 14.65 m；它跑在 `_segment_info`，那時還沒有任何線被找到，所以沒有東西可量 | 無 |
-| `_SEED_X_MAX = 8.0` / `_NOISE_X_MAX = 16.0` | 斜率↔橫向距離換算是幾何 | 8m/16m 距離手選 | **magic** | 無 |
-| `_MODEL_MEMORY_M = 4.0` | — | 局部窗長手選 | **magic** | 無 |
-| `_RESET_GAP_M = 2.0` | — | 平面變化門檻手選 | **magic** | 無 |
-| `_GRADE_RAMP_Z0 / SPAN = 6.0` | — | 近場視為自車平面的距離手選 | **magic** | 無 |
-
-小結（2026-09-15 修訂）：`_SEED_DELTA` 已刪，所以站得住腳的剩 `_MAX_GRADE_DEG`、
-`_SUPPORT_MIN_LEN_PX`（部分 `_TOL_PX_FLOOR`），另加降級後的 `_CROSS_LANE_FRACTION`。
-橫向常數由五個減為兩個（`_TOL_X_M`、`_SLOPE_GATE_X_M`），兩個都還是 magic。投影/兩平面模型本身有
-repo 內論文背書（`Lin_&_Tsai_IEEETPAMI_1991.pdf`、`AI-Enhanced_Mono-View_*.pdf`），
-但**沒有任一篇規定這些係數的具體數值**。
-
-- [ ] 待辦：對「magic（有動機）」這 6 項，用 CARLA GT 量化校準（如標線寬、橫向偏移
-      p95、實際換面距離分佈），把手選值換成資料推導值，並在註解標明來源
-      → 見[第 3 區塊](#carla-資料採集與標定)的未解項 4
-- [ ] 待辦：對「有依據」的項目，在註解補上明確 ref（規範名稱 / repo 論文路徑）
-
-### 2. `docs/diagrams/` 沒有進版控
-（2026-10-01 決定：**等整個流程確定後再重畫流程圖**，到時一併決定放哪裡。在那之前
-`docs/papers/*.drawio` 四份的本機刪除不 commit，repo 裡保留舊圖。程式註解已不再指向任何 drawio。）
-
-`docs/diagrams/` 底下有四份流程圖（`lane_segmentation_flow`、`lane_fitting_flow`、
-`pitch_estimation_flow`、`workflow`，2026-07-17），**未追蹤也沒被 gitignore**。
-它們比 `docs/papers/` 裡那幾份同名 drawio 新，但 clone 下來的人看不到 ——
-註解指過去就會重演「參照失效」。
-
-- [ ] 決定：進版控（並讓 `docs/papers/` 裡的設計 drawio 搬過去，那裡應該只放論文），
-      或確認是本機草稿、加進 `.gitignore`
-
-## 中優先
-
-### 3. 抽出仍硬寫、且連名字都沒有的數字
-這些比第 1 點更值得抽出，因為完全沒有說明（皆為 magic number）。行號已於 2026-08-27 更新：
-
-（legacy 分支刪除後，原本的 L81 斜率閘門 `0.5*min_slope*(mid_y/img_height)` 與
-L245–246 的 `assoc_window`／`0.18*center_x` 已隨之消失。）
-
-- [ ] **L161 / L174 / L177** `_fit_x_of_y`：`last_n=8`、最少 `>= 4` 點
-      （z(y) 在約 19 m 飽和之後就是靠這條，不是死路徑）
-- [ ] **L384**：`missed > max(4, track_bands // 3)`
-- [ ] **L397 / L399**：`missed >= 2`、`track_points[-2:]`
-- [ ] **L481**：`track_bands = max(int(track_bands), 16)`
-      （WWH-7 已把參數名 `num_bands` → `track_bands` 並在 config 設 16，
-      所以「默默改成 16」的坑已緩解；但 clamp 本身仍未說明理由）
-- [ ] **`geometry.py` L30**：`min_y_margin=0.05`（WWH-15 抽出 `CameraGeometry`
-      時從 lane_segmentation 搬過去的）。⚠ 它決定 `z_at` 的飽和深度：
-      `f_y*h/(0.05*512)` ≈ **19.2 m**，比直覺的「地平線附近才失效」近很多。
+`geometry.py`
+- [ ] `_MAX_GRADE_DEG = 15.0`（L9，最壞路面坡度）：15°（~27%）是道路最大縱坡的保守上界，
+      有依據；待辦是在註解補上規範名稱（如 AASHTO 縱坡上限）
+- [ ] `_GRADE_RAMP_Z0 = 6.0` / `_GRADE_RAMP_SPAN = 6.0`（L10–11，近場視為自車平面的距離）：手選
+- [ ] `min_y_margin=0.05`（L27 / L55，WWH-15 抽出 `CameraGeometry` 時從 lane_segmentation 搬過去的）。
+      ⚠ 它決定 `z_at` 的飽和深度：`f_y*h/(0.05*512)` ≈ **19.2 m**，比直覺的「地平線附近才失效」近很多。
       已由 `tests/test_geometry.py::test_z_at_saturates_beyond_the_clamp_depth` 釘住
 
-### 3b. `lane_fitting.py` / `pitch_estimation.py` / `paint_evidence.py` 的常數
-WWH-9 與 WWH-15 各新增一批常數。它們的註解**普遍比 lane_segmentation 那批好**
-（多數記了實測依據與受影響幀號），但同樣全部寫死：
-
 `lane_fitting.py`
-- [ ] `_SHADOW_MARGIN_PX = 3.0` / `_SHADOW_MIN_OVERLAP_ROWS = 8`（L10–11）
-- [ ] `_FRAG_MAX_STEP_PX = 4.0`（L21）—— 原本的隱藏耦合（註解說從 config 的
-      `min_slope = 0.3` 推來）已解：`min_slope` 隨 legacy 分支刪掉，註解改成
-      誠實說明它是**實測值**（內緣實際不超過 ~3.3 px/row），不是推導值。
-      仍待辦：找一個真的推導得出來的界，或補上量測的樣本數
-- [ ] `_JUNCTION_TOL_PX = 20.0` / `_JUNCTION_SLOPE_ROWS = 10`（L28、L31）
-- [ ] `_REFINE_SEARCH_PX = 3` / `_REFINE_MIN_GRAD = 4.0`（L38、L44）
-- [ ] **（WWH-15 新增）** `_ZJUMP_ABS_LANES = 3.0/3.25`（原 `_ZJUMP_ABS_M = 3.0`，階段 C 改成車道寬單位）/ `_ZJUMP_FRAC = 0.3`、
-      `_ZJUMP_EXTRAP_FACTOR = 1.5`（L255）—— 深度連續性截斷的門檻
+- [ ] `_ZJUMP_ABS_LANES = 3.0/3.25`（原 `_ZJUMP_ABS_M = 3.0`，階段 C 改成車道寬單位）/ `_ZJUMP_FRAC = 0.3`、
+      `_ZJUMP_EXTRAP_FACTOR = 1.5`（L239–246）—— 深度連續性截斷的門檻（WWH-15）
 
-`paint_evidence.py`（**WWH-15 新增，L62–67**）
-- [ ] `_STRIPE_M = 0.125`（CARLA 實測標線寬）、`_RIDGE_THR = 10.0`、`_PEAK_PX = 4`、
-      `_FAR_CAP_PX = 60`、`_SEG_SAMPLES = 9`、`_TRUNC_MIN_RUN = 5`
-      ⚠ **這批是刻意不進 config 的**（見第 1 點的設計爭議）；列在這裡是為了
-      清單完整，不是說一定要搬。`_STRIPE_M` 是唯一真的綁地圖的（換地圖要改）
+`paint_evidence.py`
+- [ ] `_STRIPE_M = 0.125`（L61，CARLA 實測標線寬）、`_RIDGE_THR = 10.0`（L62）—— 線位置精修
+      （`refine`）用的就這兩個。`_STRIPE_M` 是唯一真的綁地圖的（換地圖要改）
 
 `pitch_estimation.py`
 - [ ] `WINDOW_FRAC = 0.15` / `WINDOW_MIN_M = 1.0`（L7–8）—— 這兩個是 windowed
@@ -165,18 +73,17 @@ WWH-9 與 WWH-15 各新增一批常數。它們的註解**普遍比 lane_segment
 
 ## 高優先
 
-### A. `pipeline.py` 與文件的一致性
-> 已完成：batch runner 改走 `infer_one`、`infer_one` 加了 `method` 參數
-> （WWH-15）；docstring 的 "continuous spline pitch(z)" 已改正（2026-08-27）。
-> 以下是剩下的。
+### C. `docs/diagrams/` 沒有進版控
+（2026-10-01 決定：**等整個流程確定後再重畫流程圖**，到時一併決定放哪裡。在那之前
+`docs/papers/*.drawio` 四份的本機刪除不 commit，repo 裡保留舊圖。程式註解已不再指向任何 drawio。）
 
-- [ ] **單張 runner 仍攤開 pipeline**：`utils/inference_road_lane_segmentation.py`
-      要畫中間產物，所以 WWH-15 選擇「保持攤開但照 pipeline 原樣插入三道閘門」。
-      → 要消除這份拷貝，得讓 `infer_one` 有 debug 模式吐中間產物。
-      **教訓：改 pipeline 記得有兩份拷貝要同步**
-- [ ] 專案名稱仍是 "two-plane geometry"，但現在的輸出是連續 pitch(z) 曲線，
-      沒有 near/far 兩平面 + knee 的概念了 → 決定要不要重新引入，或更新命名/文件
-      （純命名決策，沒有技術債後果，不急）
+`docs/diagrams/` 底下有四份流程圖（`lane_segmentation_flow`、`lane_fitting_flow`、
+`pitch_estimation_flow`、`workflow`，2026-07-17），**未追蹤也沒被 gitignore**。
+它們比 `docs/papers/` 裡那幾份同名 drawio 新，但 clone 下來的人看不到 ——
+註解指過去就會重演「參照失效」。
+
+- [ ] 決定：進版控（並讓 `docs/papers/` 裡的設計 drawio 搬過去，那裡應該只放論文），
+      或確認是本機草稿、加進 `.gitignore`
 
 ## 中優先
 
@@ -188,8 +95,6 @@ MAE 全掃判。
 
 - [ ] `debug/` 底下的診斷腳本（`check_width_calibration.py` 等）有現成的
       合成/實測驗證邏輯，可以抽成正式測試
-- [ ] `inner_chain_points` 的 shadowing / fragment / junction purge 三段各自
-      有明確的輸入輸出契約，可以用合成鏈測，目前完全沒覆蓋
 - [ ] 沒有端到端的回歸釘樁。現在唯一的是「單張 000160 MAE 要等於 0.5581」，
       靠人記得跑。可以考慮存一組小樣本的期望值進版控
 
@@ -413,20 +318,9 @@ road 43 就是 z 尺度 **−8%**。
       MAE 應與幾何一致。**WWH-17 三路線又獨立重現一次**（off→on：full_road
       0.2072→0.2112、uphile 0.2500→0.2436、down_hile 0.3010→0.3204），偏好
       方向一致朝小 w，與該路段真寬無關
-- [ ] **[WWH-21](https://linear.app/wwhale/issue/WWH-21) 隔壁車道起種**：本車道虛線在畫面底部斷開時，
-      種子落在隔壁車道的線上 —— 552 幀虛線資料裡 28/512（5.5%）量出 5–12 m 的「車道寬」。
-      ⚠ **既有問題，不是 PR #16 造成**（刪除前後完全相同），且**恢復那兩道閘門不會解決**：
-      它們比的是含 ±15° 坡度餘裕的 `z_min`，相機越高越早失效，OpenLane 整張影像都在餘裕內。
-      修正方向是改用平路 `z_at` 界定，或對量出的寬度做道路設計範圍的合理性檢查
 - [ ] **z > 15~20 m 沒有獨立幾何驗證** —— 反解深度與正向投影兩支診斷在地平線
       附近都會病態，是診斷失效不是 pipeline 的誤差，但遠段確實缺第二個證據
 - [ ] 連 CARLA server 看 HUD，確認坡度符號（上坡為正）—— WWH-8 遺留
-- [x] ~~`lane_segmentation` 的 6 個「magic（有動機）」常數，用 CARLA GT 量化校準~~
-      **部分完成、且方法被推翻**（2026-09-15，見第 1a 節）。三個已刪或改量測；
-      ⚠ **不能只用 CARLA GT 校準**：slope gate 在 Town03 上看起來可刪（只碰 6 幀，
-      關掉甚至多 1.13 m 視距），換到 OpenLane 就掉 2 幀、中位視距少 14.65 m。
-      那三條路線幾乎沒有路口，而它擋的正是停止線與斑馬線 ——
-      **擋路口用的閘門不能在沒有路口的資料上評估。** 剩 `_TOL_X_M` 未解
 
 ## 方法論教訓
 

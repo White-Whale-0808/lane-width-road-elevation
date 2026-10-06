@@ -4,7 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Monocular road pitch angle estimation using two-plane geometry. The pipeline processes single camera images through 5 sequential stages to estimate the road's pitch angle in degrees.
+**基於車道寬度之單目前方道路起伏估測** (Lane-Width-Based Monocular Estimation of the Road
+Elevation Profile Ahead): the lane width is the ruler that turns image rows into distance, and
+the output is the road's rise and fall ahead of the car. The pipeline processes single camera
+images through 5 sequential stages to estimate the road's pitch angle in degrees as a function
+of depth.
+
+**Name** (2026-10-06): the repo is `lane-width-road-elevation`, formerly `mono3D-two-plane-geo`
+(a fork of `wiwihuang-cs/mono3D-two-plane-geo`). The old name survives where it was deliberately
+left alone — the folder name of clones made before the rename, the Linear project (still called
+`mono3D-two-plane-geo`: pass that as `project` when opening WWH issues), PRs #1–#21 and their
+branch names, commit history. All of them are this project. Open PRs against
+`White-Whale-0808`'s own repo: a fork's default PR base is the parent. "Two-plane" in
+`lane_fitting.py` comments ("two-plane hinge") is geometry — the kink where two road grades
+meet — not the old name.
 
 ## Setup
 
