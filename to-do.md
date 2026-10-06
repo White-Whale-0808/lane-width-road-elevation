@@ -1,4 +1,4 @@
-# TODO — mono3D-two-plane-geo
+# TODO — lane-width-road-elevation
 
 > **本檔只留「還沒做的事」。** 已完成的項目與被推翻的假說一律移出，論證留在
 > Linear 票（WWH-7 ~ WWH-28）與 commit 訊息裡。
@@ -174,9 +174,6 @@ WWH-9 與 WWH-15 各新增一批常數。它們的註解**普遍比 lane_segment
       要畫中間產物，所以 WWH-15 選擇「保持攤開但照 pipeline 原樣插入三道閘門」。
       → 要消除這份拷貝，得讓 `infer_one` 有 debug 模式吐中間產物。
       **教訓：改 pipeline 記得有兩份拷貝要同步**
-- [ ] 專案名稱仍是 "two-plane geometry"，但現在的輸出是連續 pitch(z) 曲線，
-      沒有 near/far 兩平面 + knee 的概念了 → 決定要不要重新引入，或更新命名/文件
-      （純命名決策，沒有技術債後果，不急）
 
 ## 中優先
 
