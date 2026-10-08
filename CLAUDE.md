@@ -4,7 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Monocular road pitch angle estimation using two-plane geometry. The pipeline processes single camera images through 5 sequential stages to estimate the road's pitch angle in degrees.
+**基於車道寬度之單目前方道路起伏估測** (Lane-Width-Based Monocular Estimation of the Road
+Elevation Profile Ahead): the lane width is the ruler that turns image rows into distance, and
+the output is the road's rise and fall ahead of the car. The pipeline processes single camera
+images through 5 sequential stages to estimate the road's pitch angle in degrees as a function
+of depth.
+
+**Name** (2026-10-06): the repo is `lane-width-road-elevation`, formerly `mono3D-two-plane-geo`
+(a fork of `wiwihuang-cs/mono3D-two-plane-geo`). The old name survives where it was deliberately
+left alone — the folder name of clones made before the rename, the Linear project (still called
+`mono3D-two-plane-geo`: pass that as `project` when opening WWH issues), PRs #1–#21 and their
+branch names, commit history. All of them are this project. Open PRs against
+`White-Whale-0808`'s own repo: a fork's default PR base is the parent. "Two-plane" in
+`lane_fitting.py` comments ("two-plane hinge") is geometry — the kink where two road grades
+meet — not the old name.
 
 ## Setup
 
@@ -45,14 +58,25 @@ front end and the metric stage) and `config/lane_detector_clrnet.yaml` (the CLRN
 weights + preprocessing + score threshold, which must match each other — the fine-tuned ep10
 weights score low and take detection 0.3 instead of the CULane release's 0.4 (WWH-28; a trust
 threshold for low-score lines was tried and rejected) — fitting options (`refine: solid` = snap to the paint only when both ego lines are
-solid and unoccluded; `smooth` is opt-in, worse on OpenLane), and its own
-centre-to-centre `last_resort_lane_width`). Runners take the camera from the dataset's
+solid and unoccluded; `smooth` is opt-in, worse on OpenLane), its own centre-to-centre
+`last_resort_lane_width` (**null since 2026-10-03**: a frame before the sequence's first width
+outputs no pitch, unless its own near-field estimate passes the gate — `single_frame`), and
+`width_filter` (**`kalman`** since 2026-10-03, `KalmanWidthCalibrator`: averages the whole
+constant-width stretch and restarts after 5 contradicting passes, so a real width change is
+followed at once; detection 0.4, all else equal: OpenLane up&down near Z-error 4.57 → 4.26 cm;
+`median` = the WWH-27 median of 40, which the ELSED pipeline keeps)). Runners take the camera from the dataset's
 `metadata.json` when it describes a different camera than the config (`libs/dataset_camera.py`).
 `openlane_module/` converts the OpenLane dataset into this project's format and
 holds the tools that measure what that data can verify — see its own README
 (including the official 3D-lane scorer and the ego-lane Z-error evaluation, WWH-26).
 `baselines/latr/` runs the public LATR (ICCV 2023) OpenLane weights locally with no
-compiled ops, as the Z-error comparison baseline — see its README.
+compiled ops, as the Z-error comparison baseline — see its README. `baselines/{anchor3dlane,
+sclane,persformer}/` do the same for Anchor3DLane++, SC-Lane (ICCV 2025) and PersFormer, each
+checked against its paper's up&down F-score (54.1 / 54.6 / 46.8 → 54.1 / 53.7 / 46.4);
+`openlane_module/zerror_multi.py` compares them on the points every method predicts.
+⚠ The up&down subset is where every parameter was tuned; on 30 random unused validation
+segments (`openlane_module/select_holdout.py`, not slope-selected) LATR leads by 2.5–3.5 cm,
+mostly where the ego lane widens ahead (turn bays) — see to-do 未解項 §3.
 
 ## Pipeline Architecture
 

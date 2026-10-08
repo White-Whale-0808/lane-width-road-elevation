@@ -20,8 +20,9 @@ metric stage is the same code, called the same way.
 
 The width is now centre-to-centre (see model_lane_fitting). The near-field
 calibrator measures it per frame, so nothing downstream needs to know — except
-`last_resort_lane_width`, whose 3.25 is inner-edge-to-inner-edge; pass the
-centre-to-centre value for this front end.
+`last_resort_lane_width` (null in config/lane_detector_clrnet.yaml since
+2026-10-03: no pitch on an assumed width); if one is passed, it must be
+centre-to-centre — the ELSED pipeline's 3.25 is inner-edge-to-inner-edge.
 
 Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
@@ -182,6 +183,10 @@ def infer_one_clrnet(
     moved ±0.1 cm and on CARLA it was no better. The fault to fix is a held
     width nothing can check (to-do), not the score of the line.
 
+    The sequence's width is resolved with resolve_lane_width's single-frame-first
+    option: a frame before the first adoption uses its own gate-passing estimate
+    ("single_frame") rather than the last-resort constant.
+
     Everything else as pipeline.infer_one, and the same result keys, plus
     width_paint_frac / nearfield_paint_frac (module docstring).
     """
@@ -220,7 +225,7 @@ def infer_one_clrnet(
     else:
         raise ValueError(f"nearfield_source must be 'all' or 'paint', got {nearfield_source!r}")
     w_real_metric, status = resolve_lane_width(
-        cal, cal_l, cal_r, last_resort_lane_width)
+        cal, cal_l, cal_r, last_resort_lane_width, single_frame_first=True)
     reason, hold_frames, hold_m = cal.reason, cal.hold_frames, cal.hold_m
     if w_real_metric is None:
         pitch_curve = {**_empty_result(), "widths": np.empty((0, 2))}

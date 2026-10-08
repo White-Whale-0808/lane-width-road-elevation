@@ -1,7 +1,7 @@
 [project]
-name = "mono3d-two-plane-ego"
+name = "lane-width-road-elevation"
 version = "0.1.0"
-description = "Add your description here"
+description = "基於車道寬度之單目前方道路起伏估測 — lane-width-based monocular estimation of the road elevation profile ahead"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [

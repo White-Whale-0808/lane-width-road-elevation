@@ -5,7 +5,7 @@
   lanes = [左, 右]，每條是 [[X, Y, Z], ...]，**相機光學座標**（右、下、前，公尺），依 Z 遞增；
   沒輸出就是空串列。轉到官方地面座標在 zerror_eval.py 做（要讀 GT JSON 的外參）。
 資料是 export_updown.py 轉出的官方上下坡子集（預設 D:/datasets/openlane_updown），一段一個
-NearfieldWidthCalibrator，設定與 WWH-25 的評估相同（不精修、近場只用漆的列量寬、有寬度檢查）。
+量寬器（config fitting.width_filter：kalman／median，pitch_estimation.width_calibrator），其餘設定與 WWH-25 的評估相同（不精修、近場只用漆的列量寬、有寬度檢查）。
 相機取自每段的 metadata.json（libs.dataset_camera）。偵測器的權重與前處理預設都讀
 config/lane_detector_clrnet.yaml；用 --weights 換權重時必須同時給 --mode、--cut-frac 與 --conf，
 前處理要跟權重的訓練方式一致（CULane 權重配錯前處理會掉線，86% → 66.5%），分數尺度也跟權重走
@@ -33,7 +33,7 @@ import numpy as np, pandas as pd, yaml
 
 from libs.inference.pipeline_clrnet import infer_one_clrnet
 from libs.inference.lane_detector import CLRNet
-from libs.inference.pitch_estimation import NearfieldWidthCalibrator
+from libs.inference.pitch_estimation import width_calibrator
 from libs.dataset_camera import camera_from_metadata
 
 
@@ -77,6 +77,8 @@ def main():
     ap.add_argument('--refine', default=None, choices=['none', 'center', 'solid', 'smooth'], help='線位置精修（pipeline_clrnet refine）；省略＝config 的 fitting.refine')
     ap.add_argument('--max-depth', type=float, default=None, help='pitch 輸出最遠深度；預設不修剪（仍有 z_cap 45 m）')
     ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--dump', action='store_true',
+                    help='另存每幀所有偵測線、分數、選出的左右曲線與相機 → <out-dir>/dump_<tag>.pkl（離線實驗用）')
     a = ap.parse_args()
     if a.weights and (a.mode is None or a.cut_frac is None or a.conf is None):
         ap.error('--weights 要搭配 --mode、--cut-frac 與 --conf（前處理與分數尺度都跟權重走）')
@@ -100,6 +102,7 @@ def main():
     out = a.out_dir / f'pred_{a.tag}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
     n = 0
+    dump = []
     with open(out, 'w', encoding='utf-8') as fo:
         for seg_dir in sorted(p for p in a.root.iterdir() if p.is_dir()):
             H, W = cfg['input']['resize_size']
@@ -107,7 +110,7 @@ def main():
             if cam is None:
                 raise SystemExit(f'{seg_dir} 沒有 metadata.json 的相機參數')
             f_x, f_y, h = cam['f_x'], cam['f_y'], cam['camera_height']
-            cal = NearfieldWidthCalibrator(f_x, f_y, H, h)
+            cal = width_calibrator(ccfg['fitting'].get('width_filter', 'median'), f_x, f_y, H, h)
             for r in pd.read_csv(seg_dir / 'measurements.csv').itertuples():
                 img = seg_dir / 'images' / f'{r.frame_id:06d}.png'
                 if not img.exists():
@@ -130,7 +133,25 @@ def main():
                                            return_debug=True)
                     rec['status'] = res['w_real_status']
                     rec['refined'] = res.get('refined', False)
+                    # 寬度從哪來、沿用多久、選線檢查結果——分析輸出幀的誤差用
+                    rec.update(w_used=res['w_real_used'], w_reason=res['w_real_reason'],
+                               hold_frames=res['w_real_hold_frames'], hold_m=res['w_real_hold_m'],
+                               guard=res['ego_guard'])
+                    est = cal.last_estimate
+                    if est is not None:          # 這幀自己的近場量測（沒過門檻也記）
+                        rec.update(est_w=est['w_real_z0'], est_theta0=est['theta0_deg'],
+                                   est_resid=est['resid_mad'], est_ok=est['quality_ok'])
                     rec['lanes'] = lanes_3d(res, f_x, W)
+                    if a.dump:
+                        dbg = res['debug']
+                        cv = lambda c: None if c is None else {k: np.asarray(c[k]) for k in ('y', 'x', 'src') if k in c}
+                        dump.append(dict(segment=seg_dir.name, frame_id=int(r.frame_id),
+                                         dist=float(r.collect_dist_m), status=rec['status'],
+                                         w_used=res['w_real_used'], guard=res['ego_guard'],
+                                         lanes=[np.asarray(l, np.float32) for l in dbg['lanes']],
+                                         score=np.asarray(dbg['lane_score'], np.float32),
+                                         left=cv(dbg['left_curve']), right=cv(dbg['right_curve']),
+                                         cam=dict(f_x=f_x, f_y=f_y, h=h, H=H, W=W)))
                 except Exception as e:
                     rec['status'] = f'error:{type(e).__name__}:{e}'[:120]
                 fo.write(json.dumps(rec) + '\n')
@@ -138,6 +159,12 @@ def main():
                     print(f'{n} {seg_dir.name[:30]} f{r.frame_id}', flush=True)
             if a.limit and n >= a.limit:
                 break
+    if a.dump:
+        import pickle
+        with open(a.out_dir / f'dump_{a.tag}.pkl', 'wb') as fo:
+            pickle.dump(dict(frames=dump, num_samples=lf['num_samples'],
+                             samples_per_meter=lf.get('samples_per_meter'),
+                             method=pe.get('method', 'windowed')), fo)
     print(f'{n} frames -> {out}')
 
 
