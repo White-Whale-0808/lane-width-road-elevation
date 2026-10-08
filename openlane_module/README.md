@@ -27,7 +27,7 @@ pipeline 與 GT 模組**一行未改** —— 相容性全部在轉換器裡解�
 | `zerror_eval.py` | 用官方評估程式算 F-score／Z-error，另存逐點誤差並跟官方彙總對帳；`--scope all`（有自車道線的幀）／`both`（兩側都有，比較範圍 B）／`all-lanes`（官方原規則，驗證別人的模型用）。GT 與預測套同一個外參轉換 |
 | `zerror_paired.py` | 兩個方法只在「同一幀、同一條線、同一距離都有點」的地方比 Z-error，不讓任一方因只輸出容易的地方而佔便宜 |
 | `zerror_multi.py` | 多個方法的共同點比較（所有方法都有點的地方）；兩方時與 `zerror_paired` 一致。對照組 LATR、Anchor3DLane++、SC-Lane、PersFormer 見 `baselines/*/README.md` |
-| `select_holdout.py` | 保留驗證集：從 validation 排除任何實驗用過的片段（上下坡、Tier A、虛線集…），固定種子隨機抽 N 段；寫清單、標註複本（`test/<name>/`，給對照模型的 `--labels`），並從 `images_validation_*.tar` 只解這些段的影像 |
+| `select_holdout.py` | 保留驗證集：從 validation 排除任何實驗用過的片段（上下坡、Tier A、虛線集…），固定種子隨機抽 N 段，或 `--min-rise R` 收「段的真值起伏中位 ≥ R」的全部段（坡道保留集，另外排除兩組隨機保留集，WWH-32）；寫清單、標註複本（`test/<name>/`，給對照模型的 `--labels`），並從 `images_validation_*.tar` 只解這些段的影像 |
 
 全部從 repo 根目錄執行，預設讀 `D:/datasets/openlane`：
 
@@ -66,7 +66,9 @@ python -m openlane_module.zerror_multi --tags ud_kf,latr,a3dpp,sclane,persformer
 
 # 保留驗證集（沒拿來調過參數的片段；結論換一批資料還成不成立）
 python -m openlane_module.select_holdout --n 30 --seed 0        # -> D:/datasets/openlane/holdout30.txt
-python -m openlane_module.export_updown --segments D:/datasets/openlane/holdout30.txt \n    --images D:/datasets/openlane/images --out D:/datasets/openlane_holdout30
+python -m openlane_module.select_holdout --min-rise 0.3 --name holdout_slope   # 坡道保留集（WWH-32，凍結）
+python -m openlane_module.export_updown --segments D:/datasets/openlane/holdout30.txt \
+    --images D:/datasets/openlane/images --out D:/datasets/openlane_holdout30
 # 之後 zerror_predict --root D:/datasets/openlane_holdout30；對照模型 --labels D:/datasets/openlane/test/holdout30/
 ```
 
