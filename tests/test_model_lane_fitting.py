@@ -9,7 +9,7 @@ import pytest
 
 from libs.inference.model_lane_fitting import (_GROUP_M, apply_tail, densify,
                                                guard_ego, trim_pitch_to_depth,
-                                               model_curve, pick_ego,
+                                               model_curve, near_pair_width, pick_ego,
                                                refine_center, src_at)
 from libs.inference.paint_evidence import _STRIPE_M
 from tests import synthetic as syn
@@ -176,6 +176,52 @@ def test_guard_wide_replaces_with_ego_line_that_starts_higher():
     ego_l = ego_l[ego_l[:, 1] <= 450.0]
     left, right, why = _guard([nb, ego_l, r], nb, r)
     assert left is ego_l and right is r and why == "wide_replaced"
+
+
+def _guard_kw(lanes, left, right, keep_wide=True):
+    return guard_ego(lanes, left, right, syn.F_X, syn.F_Y, syn.CAM_H, syn.IMG_W, syn.IMG_H,
+                     keep_wide=keep_wide)
+
+
+def _line_diverging(X0, dX_per_m, y_top=300.0):
+    """Flat-road line whose lateral offset drifts dX_per_m per metre of depth."""
+    ys = np.arange(y_top, 512.0)
+    z = syn.F_Y * syn.CAM_H / (ys - syn.CY)
+    X = X0 + dX_per_m * (z - z.min())
+    return np.column_stack([syn.CX + syn.F_X * X / z, ys])
+
+
+def test_guard_keep_wide_keeps_a_parallel_wide_lane():
+    """WWH-33: a 5.3 m lane is kept; without keep_wide its outer line is dropped as before."""
+    l, r = _line_at_offset(-2.65), _line_at_offset(2.65)
+    assert _guard_kw([l, r], l, r) == (l, r, "wide_kept")
+    left, right, why = _guard_kw([l, r], l, r, keep_wide=False)
+    assert why == "wide_dropped" and (left is None) != (right is None)
+
+
+def test_guard_keep_wide_keeps_two_lanes_too():
+    """By width alone two 3.4 m lanes (6.8 m) are a wide lane: kept. The scale
+    check in pipeline_clrnet is what drops it when the sequence's width differs."""
+    nb, r = _line_at_offset(-5.1), _line_at_offset(1.7)
+    assert _guard_kw([nb, r], nb, r) == (nb, r, "wide_kept")
+
+
+def test_guard_beyond_the_absolute_width_still_dropped():
+    nb, r = _line_at_offset(-6.5), _line_at_offset(1.7)            # 8.2 m
+    left, right, why = _guard_kw([nb, r], nb, r)
+    assert left is None and right is r and why == "wide_dropped"
+
+
+def test_guard_wide_pair_that_diverges_is_not_kept():
+    l, r = _line_diverging(-2.65, -1.0), _line_at_offset(2.65)    # 5.3 m -> ~7.2 m at twice the depth
+    left, right, why = _guard_kw([l, r], l, r)
+    assert left is None and right is r and why == "wide_dropped"
+
+
+def test_near_pair_width_on_flat_road():
+    l, r = _line_at_offset(-1.7), _line_at_offset(1.7)
+    w, z = near_pair_width(l, r, syn.F_X, syn.F_Y, syn.CAM_H, syn.IMG_W, syn.IMG_H)
+    assert abs(w - 3.4) < 0.05 and z > 0
 
 
 def test_guard_far_shared_row_left_unchecked():

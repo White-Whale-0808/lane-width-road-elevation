@@ -64,7 +64,12 @@ outputs no pitch, unless its own near-field estimate passes the gate — `single
 `width_filter` (**`kalman`** since 2026-10-03, `KalmanWidthCalibrator`: averages the whole
 constant-width stretch and restarts after 5 contradicting passes, so a real width change is
 followed at once; detection 0.4, all else equal: OpenLane up&down near Z-error 4.57 → 4.26 cm;
-`median` = the WWH-27 median of 40, which the ELSED pipeline keeps)). Runners take the camera from the dataset's
+`median` = the WWH-27 median of 40, which the ELSED pipeline keeps), and `keep_wide` +
+`scale_tolerance` (**WWH-33**: a too-wide pair that stays parallel is kept as a wide lane up to
+7.5 m instead of losing its outer line, and a frame whose pair's own near-row width differs from
+the width used by > 30 % outputs no pitch — OpenLane up&down range-B output 76.7 → 79.5 % at
+equal error, CARLA unchanged; the detector's low-score lines as evidence were tried and
+rejected)). Runners take the camera from the dataset's
 `metadata.json` when it describes a different camera than the config (`libs/dataset_camera.py`).
 `openlane_module/` converts the OpenLane dataset into this project's format and
 holds the tools that measure what that data can verify — see its own README

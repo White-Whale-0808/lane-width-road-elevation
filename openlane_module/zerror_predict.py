@@ -75,6 +75,10 @@ def main():
     ap.add_argument('--img-h', type=int, default=None)
     ap.add_argument('--conf', type=float, default=None, help='偵測門檻；省略＝config 的 conf_threshold（給 --weights 時必給）')
     ap.add_argument('--refine', default=None, choices=['none', 'center', 'solid', 'smooth'], help='線位置精修（pipeline_clrnet refine）；省略＝config 的 fitting.refine')
+    ap.add_argument('--keep-wide', default=None, choices=['on', 'off'],
+                    help='保留平行的寬線對（WWH-33）；省略＝config')
+    ap.add_argument('--scale-tol', default=None,
+                    help='尺度一致性容許比例（WWH-33）；省略＝config，off＝不檢查')
     ap.add_argument('--max-depth', type=float, default=None, help='pitch 輸出最遠深度；預設不修剪（仍有 z_cap 45 m）')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--dump', action='store_true',
@@ -96,8 +100,16 @@ def main():
                      img_w=a.img_w or cc.get('img_w', 800), img_h=a.img_h or cc.get('img_h', 320))
         cut_frac, mode = a.cut_frac, a.mode
     refine = a.refine or ccfg['fitting'].get('refine', 'none')
+
+    def opt(arg, key):
+        v = ccfg['fitting'].get(key) if arg is None else (None if arg == 'off' else float(arg))
+        return None if v is None else float(v)
+    keep_wide = (bool(ccfg['fitting'].get('keep_wide', False)) if a.keep_wide is None
+                 else a.keep_wide == 'on')
+    scale_tol = opt(a.scale_tol, 'scale_tolerance')
     print(f'detector: weights={a.weights or cc.get("weights") or "(default CULane)"} mode={mode} '
-          f'cut_frac={cut_frac} conf={cc["conf_threshold"]} refine={refine}')
+          f'cut_frac={cut_frac} conf={cc["conf_threshold"]} refine={refine} '
+          f'keep_wide={keep_wide} scale_tol={scale_tol}')
 
     out = a.out_dir / f'pred_{a.tag}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -125,6 +137,7 @@ def main():
                     res = infer_one_clrnet(det, str(img), (H, W), lf['num_samples'], f_x, f_y, h,
                                            cut_frac=cut_frac, detector_mode=mode, tail='keep',
                                            refine=refine, nearfield_source='paint', ego_guard=True,
+                                           keep_wide=keep_wide, scale_tolerance=scale_tol,
                                            max_depth_m=a.max_depth,
                                            samples_per_meter=lf.get('samples_per_meter'),
                                            method=pe.get('method', 'windowed'),
@@ -136,7 +149,8 @@ def main():
                     # 寬度從哪來、沿用多久、選線檢查結果——分析輸出幀的誤差用
                     rec.update(w_used=res['w_real_used'], w_reason=res['w_real_reason'],
                                hold_frames=res['w_real_hold_frames'], hold_m=res['w_real_hold_m'],
-                               guard=res['ego_guard'])
+                               guard=res['ego_guard'], scale=res.get('scale_check'),
+                               pair_w=res.get('pair_width'))
                     est = cal.last_estimate
                     if est is not None:          # 這幀自己的近場量測（沒過門檻也記）
                         rec.update(est_w=est['w_real_z0'], est_theta0=est['theta0_deg'],

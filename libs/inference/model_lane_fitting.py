@@ -58,6 +58,18 @@ _BG_PX = 6
 # existing range, see guard_ego.
 _EGO_W_MIN, _EGO_W_MAX = 2.5, 4.5
 
+# guard_ego keep_wide (WWH-33): a too-wide pair is kept as a genuinely wide lane
+# up to this width — above the widest OpenLane ego lane seen (6.7 m, up&down
+# 146491), below three narrow lanes.
+_EGO_W_ABS_MAX = 7.5
+
+# ...and only if it is still one lane farther out: its flat-ground width at twice
+# the shared row's depth (capped at the guard's depth) within this fraction of
+# the near-row width. A grade change moves the flat-depth width by ~4 % per
+# degree (WWH-27); a pair that diverges or crosses is not one lane. Brought in
+# against crossing hallucinated lines (see guard_ego); not measured on its own.
+_PARALLEL_TOL = 0.25
+
 # guard_ego checks the width only where the flat-ground depth is trustworthy:
 # up to this multiple of the near-field window's far end (OpenLane ~20 m,
 # CARLA ~8 m). Farther out a pixel of noise is a large width error and the road
@@ -162,7 +174,33 @@ def _x_at(lane, y):
     return float(np.interp(y, ys, xs)) if ys[0] <= y <= ys[-1] else None
 
 
-def guard_ego(lanes, left, right, f_x, f_y, camera_height, image_width, image_height):
+def _near_row(a, b, image_height):
+    """Nearest image row both lines cover, or None."""
+    y = min(np.max(np.asarray(a)[:, 1]), np.max(np.asarray(b)[:, 1]), image_height - 1.0)
+    return y if _x_at(a, y) is not None and _x_at(b, y) is not None else None
+
+
+def _flat_depth(y, f_y, camera_height, cy):
+    return f_y * camera_height / (y - cy) if y - cy > 1.0 else np.inf
+
+
+def guard_max_depth(f_y, camera_height, image_height):
+    """Deepest shared row (m) at which guard_ego trusts the flat-ground width."""
+    return _GUARD_MAX_Z_FACTOR * nearfield_window(f_y, camera_height, image_height)[1]
+
+
+def near_pair_width(left, right, f_x, f_y, camera_height, image_width, image_height):
+    """(width m, depth m) of a pair at the nearest row both cover, on flat ground —
+    the measure guard_ego checks; (None, None) when they share no row."""
+    y = _near_row(left, right, image_height)
+    if y is None:
+        return None, None
+    z = _flat_depth(y, f_y, camera_height, image_height / 2.0)
+    return (_x_at(right, y) - _x_at(left, y)) * z / f_x, z
+
+
+def guard_ego(lanes, left, right, f_x, f_y, camera_height, image_width, image_height,
+              keep_wide=False):
     """Reject an ego pair whose near-field width is not a lane width.
 
     At the nearest row both picked lines cover, the ground-plane width
@@ -186,22 +224,45 @@ def guard_ego(lanes, left, right, f_x, f_y, camera_height, image_width, image_he
     ("far_unchecked"). The bounds are the project's plausible lane-width range
     (openlane_module.convert_openlane WIDTH_MIN/MAX, the range WWH-21 proposes).
 
+    keep_wide (WWH-33): a too-wide pair no selected line can narrow is kept as
+    a genuinely wide lane ("wide_kept") when it is no wider than _EGO_W_ABS_MAX
+    and stays a lane farther out (_PARALLEL_TOL; replacements must too). False
+    keeps the behaviour above exactly. Why: a too-wide pair is either a wide
+    lane or a missed ego line, and width cannot tell them apart (a 5-7 m lane vs
+    two 3 m lanes) — OpenLane up&down has 54 real > 4.5 m lanes among the 84
+    dropped frames with a truth width, the slope hold-out set 945 frames with a
+    median 5.26 m (WWH-32). A kept wrong pair still gives the right depth as
+    long as the width used is that pair's own, so it is pipeline_clrnet's scale
+    check that tells them apart: it drops the pair when the sequence's width
+    says otherwise (on CARLA every kept pair was such a wrong one, 7.2-7.5 m,
+    and every one was dropped).
+
+    ⚠ Tried and rejected (WWH-33): the detector's lines below its threshold
+    (0.1-0.3) as evidence — a line between a too-wide pair as the missed ego
+    line. Half the missed ego lines are there (WWH-28 diagnosis), but so are
+    hallucinations that cross the road at night or on bends, and score does not
+    separate them: as replacements they were right on half the OpenLane frames
+    (146491, a real 6.8 m lane, "narrowed" to 3.4 m: 23 cm off), and on CARLA
+    uphill the width was right but the far shape was not (16-33 cm against a
+    1.5 cm route median). Keeping alone: up&down 76.7 -> 79.5 % output, near
+    4.85 -> 4.83 cm, CARLA unchanged; with the low-score lines 80.2 %, 4.86 cm,
+    CARLA uphill 6.63 -> 7.02 cm.
+
     Returns (left, right, reason): reason is "ok", "narrow_replaced",
-    "narrow_dropped", "wide_replaced", "wide_dropped", "far_unchecked",
-    "no_overlap" (the two lines share no row) or "one_side" (nothing to check).
+    "narrow_dropped", "wide_replaced", "wide_kept", "wide_dropped",
+    "far_unchecked", "no_overlap" (the two lines share no row) or "one_side"
+    (nothing to check).
     """
     if left is None or right is None:
         return left, right, "one_side"
     cx, cy = image_width / 2.0, image_height / 2.0
-    z_max = _GUARD_MAX_Z_FACTOR * nearfield_window(f_y, camera_height, image_height)[1]
+    z_max = guard_max_depth(f_y, camera_height, image_height)
 
     def near_row(a, b):
-        """Nearest image row both lines cover, or None."""
-        y = min(np.max(np.asarray(a)[:, 1]), np.max(np.asarray(b)[:, 1]), image_height - 1.0)
-        return y if _x_at(a, y) is not None and _x_at(b, y) is not None else None
+        return _near_row(a, b, image_height)
 
     def depth(y):
-        return f_y * camera_height / (y - cy) if y - cy > 1.0 else np.inf
+        return _flat_depth(y, f_y, camera_height, cy)
 
     def width_at(l, r, y):
         return (_x_at(r, y) - _x_at(l, y)) * depth(y) / f_x
@@ -219,6 +280,15 @@ def guard_ego(lanes, left, right, f_x, f_y, camera_height, image_width, image_he
         suspect_left = abs(xl - cx) > abs(xr - cx)
         kept = right if suspect_left else left
         suspect = left if suspect_left else right
+
+        def parallel(l2, r2, y0):
+            """Still a lane at twice the depth (_PARALLEL_TOL); False if a line
+            does not reach that row."""
+            y2 = cy + f_y * camera_height / min(2.0 * depth(y0), z_max)
+            if _x_at(l2, y2) is None or _x_at(r2, y2) is None:
+                return False
+            return abs(width_at(l2, r2, y2) / width_at(l2, r2, y0) - 1.0) <= _PARALLEL_TOL
+
         best, best_y = None, -np.inf
         for ln in lanes:
             if ln is left or ln is right:
@@ -233,10 +303,15 @@ def guard_ego(lanes, left, right, f_x, f_y, camera_height, image_width, image_he
             if xs is not None and abs(x - cx) >= abs(xs - cx):
                 continue                        # not nearer the centre than the suspect
             l2, r2 = (ln, kept) if suspect_left else (kept, ln)
-            if _EGO_W_MIN <= width_at(l2, r2, yc) <= _EGO_W_MAX:
-                best, best_y = ln, yc
+            if not _EGO_W_MIN <= width_at(l2, r2, yc) <= _EGO_W_MAX:
+                continue
+            if keep_wide and not parallel(l2, r2, yc):
+                continue                        # must stay a lane farther out
+            best, best_y = ln, yc
         if best is not None:
             return (best, right, "wide_replaced") if suspect_left else (left, best, "wide_replaced")
+        if keep_wide and w <= _EGO_W_ABS_MAX and parallel(left, right, y):
+            return left, right, "wide_kept"
         return (None, right, "wide_dropped") if suspect_left else (left, None, "wide_dropped")
 
     def width(l, r):
