@@ -38,6 +38,10 @@ fitting:
   # No pitch when the pair's own near-row width and the width used differ by more
   # than this fraction (a kept wrong pair, a stale held width). null disables.
   scale_tolerance: 0.3
+  # WWH-34: stop the pitch output where the lane ahead starts to change width (a turn bay, a
+  # merge), which the metric stage would read as a rise. Neighbour lane's line if seen, else the
+  # ego lines' vanishing-point ratio (bends gated). false: output to the usual depth.
+  widening_cut: true
 
   # No pitch output beyond this depth (m); the estimate uses the full curves, only
   # the output is trimmed (trim_pitch_to_depth). 20 m is for the CULane weights,

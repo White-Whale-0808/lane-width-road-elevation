@@ -69,7 +69,9 @@ followed at once; detection 0.4, all else equal: OpenLane up&down near Z-error 4
 7.5 m instead of losing its outer line, and a frame whose pair's own near-row width differs from
 the width used by > 30 % outputs no pitch — OpenLane up&down range-B output 76.7 → 79.5 % at
 equal error, CARLA unchanged; the detector's low-score lines as evidence were tried and
-rejected)). Runners take the camera from the dataset's
+rejected), and `widening_cut` (**WWH-34**: the pitch output stops where the lane ahead starts to
+change width — a turn bay reads as a rise; a neighbour lane's line if seen, else the ego lines'
+vanishing-point ratio, bends gated; `libs/inference/widening.py`)). Runners take the camera from the dataset's
 `metadata.json` when it describes a different camera than the config (`libs/dataset_camera.py`).
 `openlane_module/` converts the OpenLane dataset into this project's format and
 holds the tools that measure what that data can verify — see its own README
@@ -79,9 +81,11 @@ compiled ops, as the Z-error comparison baseline — see its README. `baselines/
 sclane,persformer}/` do the same for Anchor3DLane++, SC-Lane (ICCV 2025) and PersFormer, each
 checked against its paper's up&down F-score (54.1 / 54.6 / 46.8 → 54.1 / 53.7 / 46.4);
 `openlane_module/zerror_multi.py` compares them on the points every method predicts.
-⚠ The up&down subset is where every parameter was tuned; on 30 random unused validation
-segments (`openlane_module/select_holdout.py`, not slope-selected) LATR leads by 2.5–3.5 cm,
-mostly where the ego lane widens ahead (turn bays) — see to-do 未解項 §3.
+⚠ Development data = the up&down subset + the two random hold-out sets (holdout30 /
+holdout30b, demoted 2026-10-09 because their results had been looked at) + CARLA. The only
+untouched test set is the slope hold-out (`openlane_module/holdout_slope.txt`, WWH-32): run it
+on a final version only and record every use in WWH-32. On the random sets LATR leads by
+2.5–3.5 cm, mostly where the ego lane widens ahead (turn bays) — see to-do 未解項 §3.
 
 ## Pipeline Architecture
 
