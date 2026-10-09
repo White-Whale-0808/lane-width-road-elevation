@@ -36,6 +36,12 @@ the sequence's width. 0.3 leaves room for the flat-depth error on a grade
 change (~4 % per degree, WWH-27). On OpenLane up&down it drops nothing when
 keep_wide is off; with it on, 9 frames (8 kept pairs, 1 ordinary pair after a
 kept pair moved the sequence's width); on CARLA the 7 kept pairs.
+The check is symmetric in log: either width more than (1 + tolerance) times the
+other. As first written (|pair/used − 1| > tol) it let a width used 40 % above
+the pair's through (4.79 / 6.69 = −28 %): OpenLane holdout30b segment 537387,
+a real 5.1 m lane whose width came from kept two-lane pairs at its start, 113
+frames 36 cm off; symmetric drops 49 of them (near 13.05 → 6.67 cm there), and
+changes nothing on up&down, holdout30 or CARLA.
 
 Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
@@ -257,7 +263,7 @@ def infer_one_clrnet(
                           if left is not None and right is not None else (None, None))
         if pair_w is None or pair_z > guard_max_depth(f_y, camera_height, H):
             scale_check = "unchecked"
-        elif abs(pair_w / w_real_metric - 1.0) > scale_tolerance:
+        elif abs(np.log(pair_w / w_real_metric)) > np.log1p(scale_tolerance):
             scale_check = "mismatch"
         else:
             scale_check = "ok"
