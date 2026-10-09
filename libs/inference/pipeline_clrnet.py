@@ -9,7 +9,8 @@ metric stage is the same code, called the same way.
     1. Read + resize           same PIL bilinear resize as predict_road, no PIDNet
     2. Lane detector           CLRNet (lane_detector.py): whole lane instances
     3. Ego pair                model_lane_fitting.pick_ego, as near as possible,
-                               checked by guard_ego (near-field width plausible)
+                               checked by guard_ego (near-field width plausible;
+                               keep_wide keeps a parallel wide pair)
     4. Per-row curves          detector position at every row; each row flagged
                                paint / model by the image (optionally snapped to
                                the paint centre - off by default, see `refine`);
@@ -24,6 +25,18 @@ calibrator measures it per frame, so nothing downstream needs to know — except
 2026-10-03: no pitch on an assumed width); if one is passed, it must be
 centre-to-centre — the ELSED pipeline's 3.25 is inner-edge-to-inner-edge.
 
+Scale check (scale_tolerance, WWH-33): the width used must be the picked
+pair's own. Their flat-ground spacing at the nearest shared row (guard_ego's
+measure) differing from it by more than the tolerance means the pair and the
+width belong to different lines — a kept wrong pair, a stale held width — and
+the depth scale would be off by that ratio, so the frame outputs no pitch
+("scale_check": "mismatch"). Checked only where guard_ego trusts the flat depth.
+It is what makes keep_wide safe: a missed ego line gives a pair about twice
+the sequence's width. 0.3 leaves room for the flat-depth error on a grade
+change (~4 % per degree, WWH-27). On OpenLane up&down it drops nothing when
+keep_wide is off; with it on, 9 frames (8 kept pairs, 1 ordinary pair after a
+kept pair moved the sequence's width); on CARLA the 7 kept pairs.
+
 Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
                           paint on BOTH sides
@@ -36,7 +49,8 @@ from PIL import Image
 
 from libs.inference.lane_fitting import truncate_at_depth_jump
 from libs.inference.model_lane_fitting import (apply_tail, densify, trim_pitch_to_depth,
-                                               guard_ego, model_curve, pick_ego,
+                                               guard_ego, guard_max_depth, model_curve,
+                                               near_pair_width, pick_ego,
                                                refine_center, smooth_refine, src_at)
 from libs.inference.pitch_estimation import (NearfieldWidthCalibrator,
                                              _empty_result,
@@ -133,6 +147,8 @@ def infer_one_clrnet(
     refine: str = "none",
     nearfield_source: str = "paint",
     ego_guard: bool = True,
+    keep_wide: bool = False,
+    scale_tolerance: float = None,
     max_depth_m: float = None,
     samples_per_meter: float = None,
     method: str = "windowed",
@@ -171,6 +187,13 @@ def infer_one_clrnet(
         cuts the OpenLane width error p90 from 0.59 m to 0.23 m.
     ego_guard
         Run model_lane_fitting.guard_ego on the picked pair.
+    keep_wide
+        guard_ego keep_wide: keep a parallel too-wide pair as a wide lane (up to
+        7.5 m) instead of dropping its outer line (WWH-33). Meant with the scale
+        check on.
+    scale_tolerance
+        Scale check (module docstring): no pitch when the pair's own near-row
+        width and the width used differ by more than this fraction. None: off.
     max_depth_m
         No pitch output beyond this depth (m); the estimate is made on the full
         curves and only its output is trimmed (trim_pitch_to_depth). None: no
@@ -198,7 +221,8 @@ def infer_one_clrnet(
     left, right, y_pick_l, y_pick_r = pick_ego(lanes, W)
     guard = "off"
     if ego_guard:
-        left, right, guard = guard_ego(lanes, left, right, f_x, f_y, camera_height, W, H)
+        left, right, guard = guard_ego(lanes, left, right, f_x, f_y, camera_height, W, H,
+                                       keep_wide=keep_wide)
 
     if refine not in ("none", "center", "solid", "smooth"):
         raise ValueError(f"refine must be 'none', 'center', 'solid' or 'smooth', got {refine!r}")
@@ -227,7 +251,17 @@ def infer_one_clrnet(
     w_real_metric, status = resolve_lane_width(
         cal, cal_l, cal_r, last_resort_lane_width, single_frame_first=True)
     reason, hold_frames, hold_m = cal.reason, cal.hold_frames, cal.hold_m
-    if w_real_metric is None:
+    scale_check, pair_w = "off", None
+    if scale_tolerance is not None and w_real_metric is not None:
+        pair_w, pair_z = (near_pair_width(left, right, f_x, f_y, camera_height, W, H)
+                          if left is not None and right is not None else (None, None))
+        if pair_w is None or pair_z > guard_max_depth(f_y, camera_height, H):
+            scale_check = "unchecked"
+        elif abs(pair_w / w_real_metric - 1.0) > scale_tolerance:
+            scale_check = "mismatch"
+        else:
+            scale_check = "ok"
+    if w_real_metric is None or scale_check == "mismatch":
         pitch_curve = {**_empty_result(), "widths": np.empty((0, 2))}
     else:
         pitch_curve = estimate_pitch_from_curves(
@@ -258,7 +292,8 @@ def infer_one_clrnet(
               "w_real_hold_frames": hold_frames, "w_real_hold_m": hold_m,
               "width_paint_frac": width_paint_frac,
               "nearfield_paint_frac": nearfield_paint_frac,
-              "ego_guard": guard, "refined": bool(snapped)}
+              "ego_guard": guard, "refined": bool(snapped),
+              "scale_check": scale_check, "pair_width": pair_w}
     if return_debug:
         degenerate = pitch_curve["pitch_at"] is None or len(pitch_curve["z_samples"]) == 0
         result["debug"] = {

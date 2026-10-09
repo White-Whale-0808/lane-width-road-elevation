@@ -32,6 +32,12 @@ fitting:
   refine: solid
   nearfield_source: paint # Rows the near-field width calibrator uses: "paint" or "all" (paint-only: width p90 0.59 -> 0.23 m)
   ego_guard: true         # Reject an ego pair whose near-field width is outside 2.5-4.5 m (guard_ego)
+  # WWH-33: keep a too-wide pair (> 4.5 m) as a wide lane when it stays parallel and is
+  # <= 7.5 m, instead of dropping its outer line. false: drop as before.
+  keep_wide: true
+  # No pitch when the pair's own near-row width and the width used differ by more
+  # than this fraction (a kept wrong pair, a stale held width). null disables.
+  scale_tolerance: 0.3
 
   # No pitch output beyond this depth (m); the estimate uses the full curves, only
   # the output is trimmed (trim_pitch_to_depth). 20 m is for the CULane weights,

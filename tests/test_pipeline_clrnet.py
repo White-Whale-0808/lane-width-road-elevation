@@ -5,6 +5,7 @@ from PIL import Image
 
 from libs.inference.paint_evidence import _STRIPE_M
 from libs.inference.pipeline_clrnet import infer_one_clrnet
+from libs.inference.pitch_estimation import nearfield_window
 from tests import synthetic as syn
 
 
@@ -72,3 +73,38 @@ def test_solid_refine_snaps_only_when_both_lines_are_solid(tmp_path):
     assert not res["refined"]
     c = res["debug"]["left_curve"]
     assert np.allclose(c["x"], np.interp(c["y"], off[0][:, 1], off[0][:, 0]), atol=1e-6)
+
+
+class _HeldWidth:
+    """Calibrator stub: every frame reports a held width w (resolve_lane_width's interface)."""
+
+    def __init__(self, w):
+        self.w = w
+        self.z_lo, self.z_hi, _ = nearfield_window(syn.F_Y, syn.CAM_H, syn.IMG_H)
+        self.status, self.reason, self.hold_frames, self.hold_m = "held", "no_nearfield_rows", 1, 1.0
+        self.last_estimate = None
+
+    def update(self, left_curve, right_curve):
+        return self.w
+
+
+def _run_scale(path, lanes, w_used, tol):
+    detector = lambda rgb, f_x, f_y, cut, mode: (lanes, [0.9] * len(lanes))
+    return infer_one_clrnet(detector, path, (syn.IMG_H, syn.IMG_W), 50,
+                            syn.F_X, syn.F_Y, syn.CAM_H, cut_frac=0.0,
+                            w_real_calibrator=_HeldWidth(w_used), scale_tolerance=tol,
+                            ego_guard=False)          # the check alone, not guard_ego's drop
+
+
+def test_scale_check_drops_a_pair_the_held_width_does_not_fit(tmp_path):
+    """WWH-33: a 6.5 m pair (a kept wrong pair) with a held 3.25 m width would put
+    every depth off by 2x — no pitch. The same pair with its own width passes."""
+    lanes = _lanes(6.5)
+    path = _painted(tmp_path, lanes, "wide.png")
+    res = _run_scale(path, lanes, 3.25, 0.3)
+    assert res["scale_check"] == "mismatch" and res["pitch_curve"]["pitch_at"] is None
+    assert abs(res["pair_width"] - 6.5) < 0.1
+    res = _run_scale(path, lanes, 6.5, 0.3)
+    assert res["scale_check"] == "ok" and res["pitch_curve"]["pitch_at"] is not None
+    res = _run_scale(path, lanes, 3.25, None)
+    assert res["scale_check"] == "off" and res["pitch_curve"]["pitch_at"] is not None
