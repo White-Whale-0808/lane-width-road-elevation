@@ -108,3 +108,13 @@ def test_scale_check_drops_a_pair_the_held_width_does_not_fit(tmp_path):
     assert res["scale_check"] == "ok" and res["pitch_curve"]["pitch_at"] is not None
     res = _run_scale(path, lanes, 3.25, None)
     assert res["scale_check"] == "off" and res["pitch_curve"]["pitch_at"] is not None
+
+
+def test_scale_check_is_symmetric(tmp_path):
+    """A width used 40 % above the pair's own is as wrong as one 40 % below
+    (holdout30b 537387: pair 4.79 m, width 6.69 m, which |pair/used − 1| = 28 % let through)."""
+    lanes = _lanes(4.79)
+    path = _painted(tmp_path, lanes, "sym.png")
+    assert _run_scale(path, lanes, 6.69, 0.3)["scale_check"] == "mismatch"
+    assert _run_scale(path, lanes, 4.79 / 1.4, 0.3)["scale_check"] == "mismatch"
+    assert _run_scale(path, lanes, 4.79 * 1.2, 0.3)["scale_check"] == "ok"

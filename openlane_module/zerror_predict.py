@@ -77,6 +77,8 @@ def main():
     ap.add_argument('--refine', default=None, choices=['none', 'center', 'solid', 'smooth'], help='線位置精修（pipeline_clrnet refine）；省略＝config 的 fitting.refine')
     ap.add_argument('--keep-wide', default=None, choices=['on', 'off'],
                     help='保留平行的寬線對（WWH-33）；省略＝config')
+    ap.add_argument('--widening', default=None, choices=['on', 'off'],
+                    help='前方車道變寬處截斷輸出（WWH-34）；省略＝config')
     ap.add_argument('--scale-tol', default=None,
                     help='尺度一致性容許比例（WWH-33）；省略＝config，off＝不檢查')
     ap.add_argument('--max-depth', type=float, default=None, help='pitch 輸出最遠深度；預設不修剪（仍有 z_cap 45 m）')
@@ -107,9 +109,11 @@ def main():
     keep_wide = (bool(ccfg['fitting'].get('keep_wide', False)) if a.keep_wide is None
                  else a.keep_wide == 'on')
     scale_tol = opt(a.scale_tol, 'scale_tolerance')
+    widening = (bool(ccfg['fitting'].get('widening_cut', False)) if a.widening is None
+                else a.widening == 'on')
     print(f'detector: weights={a.weights or cc.get("weights") or "(default CULane)"} mode={mode} '
           f'cut_frac={cut_frac} conf={cc["conf_threshold"]} refine={refine} '
-          f'keep_wide={keep_wide} scale_tol={scale_tol}')
+          f'keep_wide={keep_wide} scale_tol={scale_tol} widening={widening}')
 
     out = a.out_dir / f'pred_{a.tag}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -138,6 +142,7 @@ def main():
                                            cut_frac=cut_frac, detector_mode=mode, tail='keep',
                                            refine=refine, nearfield_source='paint', ego_guard=True,
                                            keep_wide=keep_wide, scale_tolerance=scale_tol,
+                                           widening_cut=widening,
                                            max_depth_m=a.max_depth,
                                            samples_per_meter=lf.get('samples_per_meter'),
                                            method=pe.get('method', 'windowed'),
@@ -150,7 +155,8 @@ def main():
                     rec.update(w_used=res['w_real_used'], w_reason=res['w_real_reason'],
                                hold_frames=res['w_real_hold_frames'], hold_m=res['w_real_hold_m'],
                                guard=res['ego_guard'], scale=res.get('scale_check'),
-                               pair_w=res.get('pair_width'))
+                               pair_w=res.get('pair_width'), widen_cue=res.get('widening_cue'),
+                               widen_cut=res.get('widening_cut_m'))
                     est = cal.last_estimate
                     if est is not None:          # 這幀自己的近場量測（沒過門檻也記）
                         rec.update(est_w=est['w_real_z0'], est_theta0=est['theta0_deg'],

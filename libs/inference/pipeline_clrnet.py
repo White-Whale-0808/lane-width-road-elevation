@@ -36,6 +36,12 @@ the sequence's width. 0.3 leaves room for the flat-depth error on a grade
 change (~4 % per degree, WWH-27). On OpenLane up&down it drops nothing when
 keep_wide is off; with it on, 9 frames (8 kept pairs, 1 ordinary pair after a
 kept pair moved the sequence's width); on CARLA the 7 kept pairs.
+The check is symmetric in log: either width more than (1 + tolerance) times the
+other. As first written (|pair/used − 1| > tol) it let a width used 40 % above
+the pair's through (4.79 / 6.69 = −28 %): OpenLane holdout30b segment 537387,
+a real 5.1 m lane whose width came from kept two-lane pairs at its start, 113
+frames 36 cm off; symmetric drops 49 of them (near 13.05 → 6.67 cm there), and
+changes nothing on up&down, holdout30 or CARLA.
 
 Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
@@ -52,6 +58,7 @@ from libs.inference.model_lane_fitting import (apply_tail, densify, trim_pitch_t
                                                guard_ego, guard_max_depth, model_curve,
                                                near_pair_width, pick_ego,
                                                refine_center, smooth_refine, src_at)
+from libs.inference.widening import widening_row
 from libs.inference.pitch_estimation import (NearfieldWidthCalibrator,
                                              _empty_result,
                                              estimate_pitch_from_curves,
@@ -149,6 +156,7 @@ def infer_one_clrnet(
     ego_guard: bool = True,
     keep_wide: bool = False,
     scale_tolerance: float = None,
+    widening_cut: bool = False,
     max_depth_m: float = None,
     samples_per_meter: float = None,
     method: str = "windowed",
@@ -194,6 +202,11 @@ def infer_one_clrnet(
     scale_tolerance
         Scale check (module docstring): no pitch when the pair's own near-row
         width and the width used differ by more than this fraction. None: off.
+    widening_cut
+        Stop the pitch output where the lane ahead starts to change width
+        (widening.widening_row: a neighbour lane's line, else the ego lines'
+        vanishing-point ratio), since the metric stage reads a widening as a
+        rise (WWH-34). Off: output to the usual depth.
     max_depth_m
         No pitch output beyond this depth (m); the estimate is made on the full
         curves and only its output is trimmed (trim_pitch_to_depth). None: no
@@ -257,7 +270,7 @@ def infer_one_clrnet(
                           if left is not None and right is not None else (None, None))
         if pair_w is None or pair_z > guard_max_depth(f_y, camera_height, H):
             scale_check = "unchecked"
-        elif abs(pair_w / w_real_metric - 1.0) > scale_tolerance:
+        elif abs(np.log(pair_w / w_real_metric)) > np.log1p(scale_tolerance):
             scale_check = "mismatch"
         else:
             scale_check = "ok"
@@ -269,6 +282,17 @@ def infer_one_clrnet(
             num_samples=num_samples, samples_per_meter=samples_per_meter,
             method=method)
         pitch_curve = trim_pitch_to_depth(pitch_curve, max_depth_m)
+
+    widen_row = widen_cue = widen_cut = None
+    if widening_cut and pitch_curve["pitch_at"] is not None and len(pitch_curve["z_samples"]):
+        widen_row, widen_cue = widening_row(left_curve, right_curve, lanes, f_x, f_y,
+                                            camera_height, H)
+        if widen_row is not None:
+            w_px = (np.interp(widen_row, right_curve["y"], right_curve["x"])
+                    - np.interp(widen_row, left_curve["y"], left_curve["x"]))
+            if w_px > 0:
+                widen_cut = f_x * w_real_metric / w_px
+                pitch_curve = trim_pitch_to_depth(pitch_curve, widen_cut)
 
     # share of the reported pitch output's width samples that are paint on both
     # sides: only rows within the (possibly trimmed) output depth, None without output
@@ -293,7 +317,8 @@ def infer_one_clrnet(
               "width_paint_frac": width_paint_frac,
               "nearfield_paint_frac": nearfield_paint_frac,
               "ego_guard": guard, "refined": bool(snapped),
-              "scale_check": scale_check, "pair_width": pair_w}
+              "scale_check": scale_check, "pair_width": pair_w,
+              "widening_cue": widen_cue, "widening_cut_m": widen_cut}
     if return_debug:
         degenerate = pitch_curve["pitch_at"] is None or len(pitch_curve["z_samples"]) == 0
         result["debug"] = {
