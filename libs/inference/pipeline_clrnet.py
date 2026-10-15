@@ -42,6 +42,12 @@ the pair's through (4.79 / 6.69 = −28 %): OpenLane holdout30b segment 537387,
 a real 5.1 m lane whose width came from kept two-lane pairs at its start, 113
 frames 36 cm off; symmetric drops 49 of them (near 13.05 → 6.67 cm there), and
 changes nothing on up&down, holdout30 or CARLA.
+A held width on an unchecked pair ("held_unchecked", WWH-35) also outputs no
+pitch: the frame measured no width and its pair cannot be compared with the old
+one, so nothing ties the old width to these lines. CARLA Town03 uphill nearing
+the crest: lines only start far ahead, the held 3.48 m meets a pair whose far
+flat spacing reads 15–20 m, 9 frames ~2.2 m off (uphill mean 6.63 → ~2.3 cm).
+No OpenLane development frame (up&down, holdout30, holdout30b) has this case.
 
 Extra outputs, for evaluation (reported, not used as gates):
     width_paint_frac      share of the pitch stage's width samples whose row is
@@ -274,7 +280,9 @@ def infer_one_clrnet(
             scale_check = "mismatch"
         else:
             scale_check = "ok"
-    if w_real_metric is None or scale_check == "mismatch":
+        if scale_check == "unchecked" and status == "held":
+            scale_check = "held_unchecked"     # no fresh width, no way to check the old one
+    if w_real_metric is None or scale_check in ("mismatch", "held_unchecked"):
         pitch_curve = {**_empty_result(), "widths": np.empty((0, 2))}
     else:
         pitch_curve = estimate_pitch_from_curves(

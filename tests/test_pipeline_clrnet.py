@@ -78,21 +78,21 @@ def test_solid_refine_snaps_only_when_both_lines_are_solid(tmp_path):
 class _HeldWidth:
     """Calibrator stub: every frame reports a held width w (resolve_lane_width's interface)."""
 
-    def __init__(self, w):
+    def __init__(self, w, status="held"):
         self.w = w
         self.z_lo, self.z_hi, _ = nearfield_window(syn.F_Y, syn.CAM_H, syn.IMG_H)
-        self.status, self.reason, self.hold_frames, self.hold_m = "held", "no_nearfield_rows", 1, 1.0
+        self.status, self.reason, self.hold_frames, self.hold_m = status, "no_nearfield_rows", 1, 1.0
         self.last_estimate = None
 
     def update(self, left_curve, right_curve):
         return self.w
 
 
-def _run_scale(path, lanes, w_used, tol):
+def _run_scale(path, lanes, w_used, tol, status="held"):
     detector = lambda rgb, f_x, f_y, cut, mode: (lanes, [0.9] * len(lanes))
     return infer_one_clrnet(detector, path, (syn.IMG_H, syn.IMG_W), 50,
                             syn.F_X, syn.F_Y, syn.CAM_H, cut_frac=0.0,
-                            w_real_calibrator=_HeldWidth(w_used), scale_tolerance=tol,
+                            w_real_calibrator=_HeldWidth(w_used, status), scale_tolerance=tol,
                             ego_guard=False)          # the check alone, not guard_ego's drop
 
 
@@ -118,3 +118,25 @@ def test_scale_check_is_symmetric(tmp_path):
     assert _run_scale(path, lanes, 6.69, 0.3)["scale_check"] == "mismatch"
     assert _run_scale(path, lanes, 4.79 / 1.4, 0.3)["scale_check"] == "mismatch"
     assert _run_scale(path, lanes, 4.79 * 1.2, 0.3)["scale_check"] == "ok"
+
+
+def _far_lanes(w_real, y_lo=262.0, y_hi=300.0):
+    """Ego lines seen only far ahead (rows y_lo..y_hi, ~11–80 m on the test camera):
+    nothing near, as over a crest."""
+    y = np.arange(y_lo, y_hi, 1.0)
+    z = syn.F_Y * syn.CAM_H / (y - syn.CY)
+    half = syn.F_X * w_real / 2.0 / z
+    return [np.column_stack([syn.CX - half, y]), np.column_stack([syn.CX + half, y])]
+
+
+def test_held_width_on_an_unchecked_pair_outputs_nothing(tmp_path):
+    """WWH-35: a held width and a pair that shares no near row (its flat spacing
+    cannot be trusted, so the scale check cannot run) — nothing ties the old width
+    to these lines: no pitch. The same pair with a width measured this frame
+    still outputs (unchecked only)."""
+    lanes = _far_lanes(3.25)
+    path = _painted(tmp_path, lanes, "far.png")
+    res = _run_scale(path, lanes, 3.25, 0.3, status="held")
+    assert res["scale_check"] == "held_unchecked" and res["pitch_curve"]["pitch_at"] is None
+    res = _run_scale(path, lanes, 3.25, 0.3, status="measured")
+    assert res["scale_check"] == "unchecked" and res["pitch_curve"]["pitch_at"] is not None
