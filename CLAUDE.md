@@ -69,7 +69,9 @@ followed at once; detection 0.4, all else equal: OpenLane up&down near Z-error 4
 7.5 m instead of losing its outer line, and a frame whose pair's own near-row width differs from
 the width used by > 30 % outputs no pitch — OpenLane up&down range-B output 76.7 → 79.5 % at
 equal error, CARLA unchanged; the detector's low-score lines as evidence were tried and
-rejected), and `widening_cut` (**WWH-34**: the pitch output stops where the lane ahead starts to
+rejected; **WWH-35**: a *held* width on a pair too far to check outputs no pitch either —
+CARLA uphill crest, 9 frames ~2.2 m off; no OpenLane dev frame affected. Tightening the
+tolerance to 0.15 is **not** safe: it drops correct CARLA frames at a grade change), and `widening_cut` (**WWH-34**: the pitch output stops where the lane ahead starts to
 change width — a turn bay reads as a rise; a neighbour lane's line if seen, else the ego lines'
 vanishing-point ratio, bends gated; `libs/inference/widening.py`)). Runners take the camera from the dataset's
 `metadata.json` when it describes a different camera than the config (`libs/dataset_camera.py`).
