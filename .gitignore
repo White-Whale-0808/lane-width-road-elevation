@@ -14,7 +14,6 @@ debug/
 .DS_Store
 
 # Data files
-libs/dataset/cityscape
 inference_datasets/
 outputs/
 
