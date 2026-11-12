@@ -142,7 +142,7 @@ hashes over CARLA 120 frames + OpenLane Tier A 168 frames). Two survive,
 | cross-lane cap | **measured per frame** (`_measure_lane_width_m`): each side's lateral offset at its own seed row, summed. Unmeasurable ⇒ cap off, never a guessed width |
 | slope gate | **kept** — the one lateral scale that cannot be measured instead of assumed; it runs in `_segment_info`, before any line has been found |
 
-⚠ Two traps behind that table, both written up with the numbers in the README:
+⚠ Two traps behind that table, both written up with the numbers in README.en.md:
 the deleted pair was inert because of the ±15° grade slack in `z_min`, **not**
 because innermost-first selection makes an outer bound redundant; and the slope
 gate looks removable on CARLA only because those routes have no junctions —

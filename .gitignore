@@ -14,7 +14,6 @@ debug/
 .DS_Store
 
 # Data files
-libs/dataset/cityscape
 inference_datasets/
 outputs/
 
@@ -30,3 +29,6 @@ pidnet_pretrained_model/PIDNet_L_Cityscapes_test.pt
 
 # 對照模型推論在目前目錄留下的前處理快取
 .cache/
+
+# 參考論文全文（版權屬原出版者，只留本機）
+docs/papers/**/*.pdf

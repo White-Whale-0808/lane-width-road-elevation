@@ -17,6 +17,9 @@
 > 內緣鏈、ELSED 線段）的待辦全部刪除 —— 原第 1 區塊只留 CLRNet 流程也在用的幾何常數，
 > `docs/diagrams/` 搬到 Repo 層級 §C；Repo §A（單張 runner 攤開 ELSED pipeline）、§D 的
 > `inner_chain_points` 測試、未解項 4 的 WWH-21 一併刪除。原文在 git 歷史與 WWH-15／21 票上。
+> **2026-11-12**：整理 repo 給同學看（PR #34）—— Repo §C 結案（README 用的兩張圖放 `docs/images/`，
+> 其餘 `docs/diagrams/` 留本機；`docs/papers/` 舊 drawio 刪除）、§E 結案（孤立 config 與舊
+> ResNet101 訓練路徑刪除）。README 的細節段落搬到 `README.en.md`。
 
 四大區塊：
 1. [寫死的幾何常數](#寫死的幾何常數)
@@ -71,20 +74,6 @@ CLRNet 流程也在用的常數：`pipeline_clrnet` 呼叫 `lane_fitting.truncat
 
 # Repo 層級待辦
 
-## 高優先
-
-### C. `docs/diagrams/` 沒有進版控
-（2026-10-01 決定：**等整個流程確定後再重畫流程圖**，到時一併決定放哪裡。在那之前
-`docs/papers/*.drawio` 四份的本機刪除不 commit，repo 裡保留舊圖。程式註解已不再指向任何 drawio。）
-
-`docs/diagrams/` 底下有四份流程圖（`lane_segmentation_flow`、`lane_fitting_flow`、
-`pitch_estimation_flow`、`workflow`，2026-07-17），**未追蹤也沒被 gitignore**。
-它們比 `docs/papers/` 裡那幾份同名 drawio 新，但 clone 下來的人看不到 ——
-註解指過去就會重演「參照失效」。
-
-- [ ] 決定：進版控（並讓 `docs/papers/` 裡的設計 drawio 搬過去，那裡應該只放論文），
-      或確認是本機草稿、加進 `.gitignore`
-
 ## 中優先
 
 ### D. 單元測試（已有 55 個，覆蓋面仍窄）
@@ -99,19 +88,6 @@ MAE 全掃判。
       靠人記得跑。可以考慮存一組小樣本的期望值進版控
 
 ## 低優先
-
-### E. config 與文件一致性
-（已完成：3 個被註解的舊 config 參數已清；README.md 已依 2026-08-27 的程式碼
-重寫一次 —— 它原本還在寫已刪除的 `lane_segmentation_up_hile.py` / `_down_hile.py`、
-不存在的 `utils/convert_metadata_to_gt.py` / `plot_frameId_and_pitch.py` /
-`analyze_error/`、舊的 piecewise 車道擬合與 3.216 的 `w_real`。）
-
-- [ ] `config/convert_metadata_to_gt.yaml` 仍在版控，但它的腳本
-      `utils/convert_metadata_to_gt.py` 已不存在（GT 自 WWH-14 起改由
-      `road_profile.csv` 提供）→ 確認後刪
-- [ ] `config/train_road_segmentation.yaml` + `libs/engine/` + `libs/model/resnet101.py`
-      + `libs/dataset/` 是舊 Resnet101 訓練路徑，已不在任何推論流程上
-      → 決定留作歷史還是清掉（README 目前只用一行帶過）
 
 ### B2. windowed pitch 的延遲（即時化前要處理）
 - [ ] `estimate_pitch_windowed` 每幀呼叫 200 次 `theilslopes`，pitch 階段
@@ -371,7 +347,7 @@ road 43 就是 z 尺度 **−8%**。
 WWH-25 換上的學習式偵測器（ep10 權重）。2026-10-02 WWH-28 的抓線分析：OpenLane 上下坡
 5,518 幀裡，量不到車道寬的幀 84% 是**偵測器少抓一側**，近場沒漆、俯仰門檻都是小頭。
 ep10 的分數門檻已改成偵測 0.3（`config/lane_detector_clrnet.yaml` 的註解）：範圍 B 有輸出
-63 → 79%，但新增的幀多半只能沿用寬度，近段 4.58 → 5.30 cm；WWH-30（卡爾曼、不用固定值）後 76.7%、4.85 cm（沿用的寬度錯了沒有東西能發現：已知限制、不修，見 README 的 133368 說明）。線位置精修預設 `refine: solid`（兩條線都是實線、
+63 → 79%，但新增的幀多半只能沿用寬度，近段 4.58 → 5.30 cm；WWH-30（卡爾曼、不用固定值）後 76.7%、4.85 cm（沿用的寬度錯了沒有東西能發現：已知限制、不修，見 README.en.md 的 133368 說明）。線位置精修預設 `refine: solid`（兩條線都是實線、
 沒被擋才吸附漆中心；CARLA 實線路線 30–45 m 線誤差 4.7–7.4 → 0.4–0.9 px，OpenLane 幾乎不觸發）。
 下面是還沒做的。
 

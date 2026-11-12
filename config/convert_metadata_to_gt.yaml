@@ -1,4 +1,0 @@
-slope_deg: 12.25
-io:
-  input_dir: "inference_datasets/solid_line/up_hile/metadata_filtered.csv"
-  output_dir: "outputs/metadata_gt.csv"
