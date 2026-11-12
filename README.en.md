@@ -55,7 +55,7 @@ The switch was made because ELSED misses much of a dashed line: on OpenLane dash
 | 2. Lane detector | `lane_detector.CLRNet` | Whole lane instances. Weights fine-tuned on OpenLane's 2D labels (converted by `openlane_module/convert_openlane_culane.py`); the score threshold goes with the weights (0.3 for the fine-tuned ones, 0.4 for the CULane release) |
 | 3. Ego pair | `model_lane_fitting.pick_ego`, `guard_ego` | Nearest left/right pair; its near-field width must be 2.5–4.5 m. A wider pair that stays parallel is kept as a genuinely wide lane (up to 7.5 m, `keep_wide`) instead of losing its outer line |
 | 4. Per-row curves | `pipeline_clrnet`, `model_lane_fitting` | Detector position at every row, each row flagged *paint* or *model* by a photometric check on the image. With `refine: solid` the lines are snapped to the paint centre only when both are solid and unoccluded. `lane_fitting.truncate_at_depth_jump` cuts at a hidden interval |
-| 5. Lane width | `pitch_estimation.NearfieldWidthCalibrator`, `KalmanWidthCalibrator` | Near-field rows with paint on both sides only; Theil-Sen intercept, rejected when the fit's camera pitch exceeds 1°. A Kalman filter combines the passes of one sequence and restarts after 5 contradicting passes, so a real width change is followed at once |
+| 5. Lane width | `pitch_estimation.NearfieldWidthCalibrator`, `KalmanWidthCalibrator` | Near-field rows from each line's paint rows only, bridged by interpolation between paint rows (`nearfield_source: paint`); Theil-Sen intercept, rejected when the fit's camera pitch exceeds 1°. A Kalman filter combines the passes of one sequence and restarts after 5 contradicting passes, so a real width change is followed at once |
 | 6. Profile | `pitch_estimation.estimate_pitch_from_curves` | Unchanged from the ELSED pipeline |
 | 7. Reliability checks | `pipeline_clrnet`, `widening.py` | No output when the pair's own near-row width and the width used differ by more than 30 % (a wrong pair, a stale width), or when a held width meets a pair too far away to check. The output stops where the lane ahead starts to widen (a turn bay reads as a rise): a neighbour lane's line if seen, else the ego lines' vanishing-point ratio, with bends gated |
 
@@ -429,7 +429,7 @@ Datasets with no `road_profile.csv` fall back to a legacy GT that reconstructs t
 
 ## Configuration Reference
 
-All inference parameters live in `config/inference_road_lane_segmentation.yaml`. The sections map 1:1 onto the pipeline stages, plus `ground_truth`, `visualization` and `csv_io`. The file itself carries long comments recording where each calibrated value came from; this is only a map.
+The ELSED front end and the parts both front ends share (camera, resize, the metric stage) live in `config/inference_road_lane_segmentation.yaml`, shown below; the CLRNet front end's own options are in `config/lane_detector_clrnet.yaml` (see [The CLRNet Front End](#the-clrnet-front-end-current)). In the first file the sections map 1:1 onto the ELSED pipeline's stages, plus `ground_truth`, `visualization` and `csv_io`. The file itself carries long comments recording where each calibrated value came from; this is only a map.
 
 ```yaml
 model:
